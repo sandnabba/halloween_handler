@@ -1,0 +1,7 @@
+homeassistant-api
+python-dotenv
+paho-mqtt
+flask
+flask-socketio
+flask-cors
+requests

@@ -1,0 +1,9 @@
+# PlatformIO build artifacts
+.pio/
+platformio.ini
+.vscode/
+build/
+.DS_Store
+
+# Secrets and credentials - NEVER commit
+src/secrets.h
