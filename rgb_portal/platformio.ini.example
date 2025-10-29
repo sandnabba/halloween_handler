@@ -1,0 +1,10 @@
+[env:esp32dev]
+platform = espressif32
+board = esp32dev
+framework = arduino
+monitor_speed = 115200
+lib_deps = 
+    fastled/FastLED@^3.6.0
+    knolleary/PubSubClient@^2.8
+upload_protocol = espota
+upload_port = YOUR_ESP32_IP_HERE
