@@ -51,3 +51,4 @@ See [QUICKSTART.md](QUICKSTART.md) for setup instructions.
 - [ ] Create mobile app?
 - [ ] Add portal state history/timeline view
 - [ ] Add metrics/analytics dashboard
+- [ ] Add "dead man" under car or other interactive effect

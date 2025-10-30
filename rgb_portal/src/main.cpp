@@ -103,6 +103,10 @@ unsigned long lastPassageEndTime = 0; // When last passage ended
 #define MIN_PASSAGE_DURATION 1500 // ms - minimum time to stay green during passage
 #define PASSAGE_COOLDOWN 1000 // ms - cooldown after passage before next trigger
 
+// Variables for WiFi reconnection
+unsigned long lastWiFiReconnectAttempt = 0;
+#define WIFI_RECONNECT_INTERVAL 5000 // ms - try reconnecting every 5 seconds
+
 // Forward declarations
 void triggerRedBlink();
 void triggerGreenBlink();
@@ -349,7 +353,7 @@ void handleToggle() {
   
   String response = "{\"status\":\"ok\",\"state\":";
   response += (currentState == ROTATING) ? "1" : "2";
-  response += "}";
+  response += "}\n";
 
   Serial.println("Toggle state (manual)");
   
@@ -359,7 +363,7 @@ void handleToggle() {
 void handleState() {
   String response = "{\"state\":";
   response += (currentState == ROTATING) ? "1" : ((currentState == BLINK_RED) ? "2" : "3");
-  response += "}";
+  response += "}\n";
   
   server.send(200, "application/json", response);
 }
@@ -367,7 +371,7 @@ void handleState() {
 void handleGreenBlink() {
   triggerGreenBlink();
   
-  String response = "{\"status\":\"ok\",\"state\":3}";
+  String response = "{\"status\":\"ok\",\"state\":3}\n";
   Serial.println("Green blink triggered (manual)");
   
   server.send(200, "application/json", response);
@@ -376,7 +380,7 @@ void handleGreenBlink() {
 void handleRedBlink() {
   triggerRedBlink();
   
-  String response = "{\"status\":\"ok\",\"state\":2}";
+  String response = "{\"status\":\"ok\",\"state\":2}\n";
   Serial.println("Red blink triggered (manual)");
   
   server.send(200, "application/json", response);
@@ -386,7 +390,7 @@ void handleReset() {
   currentState = ROTATING;
   publishStateToMQTT();
   
-  String response = "{\"status\":\"ok\",\"state\":1}";
+  String response = "{\"status\":\"ok\",\"state\":1}\n";
   Serial.println("Reset to ROTATING state (manual)");
   
   server.send(200, "application/json", response);
@@ -403,12 +407,14 @@ void handleRoot() {
   html += "<li>GET /reset - Reset to ROTATING state</li>";
   html += "<li>GET /state - Get current state (1=ROTATING, 2=BLINK_RED, 3=BLINK_GREEN)</li>";
   html += "<li>GET /distance - Get current ultrasonic sensor distance</li>";
+  html += "<li>GET /signal - Get WiFi signal strength</li>";
   html += "</ul>";
   html += "<button onclick=\"fetch('/toggle')\">Toggle Red</button> ";
   html += "<button onclick=\"fetch('/red')\">Red Blink</button> ";
   html += "<button onclick=\"fetch('/green')\">Green Blink</button> ";
   html += "<button onclick=\"fetch('/reset')\">Reset</button> ";
-  html += "<button onclick=\"fetch('/distance').then(r=>r.json()).then(d=>alert('Distance: '+d.distance+' cm'))\">Check Distance</button>";
+  html += "<button onclick=\"fetch('/distance').then(r=>r.json()).then(d=>alert('Distance: '+d.distance+' cm'))\">Check Distance</button> ";
+  html += "<button onclick=\"fetch('/signal').then(r=>r.json()).then(d=>alert('WiFi: '+d.rssi+' dBm ('+d.quality+'%'))\">WiFi Signal</button>";
   html += "</body></html>";
   
   server.send(200, "text/html", html);
@@ -442,7 +448,36 @@ void handleDistance() {
   response += (distance >= MIN_DETECTION_DISTANCE && distance <= MAX_DETECTION_DISTANCE) ? "true" : "false";
   response += ",\"personDetected\":";
   response += (distance < DETECTION_RANGE && distance >= MIN_DETECTION_DISTANCE) ? "true" : "false";
-  response += "}";
+  response += "}\n";
+  
+  server.send(200, "application/json", response);
+}
+
+void handleWiFiSignal() {
+  int rssi = WiFi.RSSI(); // Get signal strength in dBm
+  int quality = 0;
+  
+  // Convert RSSI to quality percentage (rough estimate)
+  // RSSI ranges from -100 (worst) to -30 (best)
+  if (rssi >= -50) {
+    quality = 100;
+  } else if (rssi >= -100) {
+    quality = 2 * (rssi + 100);
+  } else {
+    quality = 0;
+  }
+  
+  String response = "{\"rssi\":";
+  response += rssi;
+  response += ",\"quality\":";
+  response += quality;
+  response += ",\"unit\":\"dBm\"}\n";
+  
+  Serial.print("WiFi Signal: ");
+  Serial.print(rssi);
+  Serial.print(" dBm (");
+  Serial.print(quality);
+  Serial.println("%)");
   
   server.send(200, "application/json", response);
 }
@@ -785,6 +820,9 @@ void setup() {
   // GET /distance - Get current ultrasonic sensor distance
   server.on("/distance", handleDistance);
   
+  // GET /signal - Get WiFi signal strength
+  server.on("/signal", handleWiFiSignal);
+  
   // GET / - Welcome page
   server.on("/", handleRoot);
   
@@ -805,6 +843,16 @@ void loop() {
   // Handle OTA updates
   ArduinoOTA.handle();
   
+  // Maintain WiFi connection
+  if (WiFi.status() != WL_CONNECTED) {
+    unsigned long now = millis();
+    if (now - lastWiFiReconnectAttempt > WIFI_RECONNECT_INTERVAL) {
+      lastWiFiReconnectAttempt = now;
+      Serial.println("WiFi disconnected! Attempting to reconnect...");
+      WiFi.reconnect();
+    }
+  }
+  
   // Maintain MQTT connection (non-blocking)
   if (!mqttClient.connected()) {
     static unsigned long lastReconnectAttempt = 0;
@@ -820,5 +868,4 @@ void loop() {
   server.handleClient();
   updateAnimations();
   checkMotionDetection();
-  // checkStateTimeout(); removed - red state now manual reset only
 }
