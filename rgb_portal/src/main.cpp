@@ -103,6 +103,10 @@ unsigned long lastPassageEndTime = 0; // When last passage ended
 #define MIN_PASSAGE_DURATION 1500 // ms - minimum time to stay green during passage
 #define PASSAGE_COOLDOWN 1000 // ms - cooldown after passage before next trigger
 
+// Variables for WiFi reconnection
+unsigned long lastWiFiReconnectAttempt = 0;
+#define WIFI_RECONNECT_INTERVAL 5000 // ms - try reconnecting every 5 seconds
+
 // Forward declarations
 void triggerRedBlink();
 void triggerGreenBlink();
@@ -805,6 +809,16 @@ void loop() {
   // Handle OTA updates
   ArduinoOTA.handle();
   
+  // Maintain WiFi connection
+  if (WiFi.status() != WL_CONNECTED) {
+    unsigned long now = millis();
+    if (now - lastWiFiReconnectAttempt > WIFI_RECONNECT_INTERVAL) {
+      lastWiFiReconnectAttempt = now;
+      Serial.println("WiFi disconnected! Attempting to reconnect...");
+      WiFi.reconnect();
+    }
+  }
+  
   // Maintain MQTT connection (non-blocking)
   if (!mqttClient.connected()) {
     static unsigned long lastReconnectAttempt = 0;
@@ -820,5 +834,4 @@ void loop() {
   server.handleClient();
   updateAnimations();
   checkMotionDetection();
-  // checkStateTimeout(); removed - red state now manual reset only
 }
