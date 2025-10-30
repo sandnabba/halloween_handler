@@ -249,21 +249,21 @@ def flicker():
     
     for x in range(3):
         print(f"Starting flicker round {x+1}/3")
-        if cycle(10, 0.4): return True
-        if cycle(0, 4): return True
-        if cycle(200, 0.2): return True
-        if cycle(0, 1.7): return True
-
-        if cycle(150, 0.2): return True
-        if cycle(50, 0.2): return True
-        if cycle(0, 3.5): return True
-
-        if cycle(200, 0.2): return True
-        if cycle(20, 0.4): return True
-        if cycle(70, 0.3): return True
-        if cycle(0, 0.5): return True
+        if cycle(10, 0.3): return True
+        if cycle(0, 3): return True
+        if cycle(200, 0.3): return True
+        if cycle(0, 2.5): return True
 
         if cycle(150, 0.3): return True
+        if cycle(50, 0.3): return True
+        if cycle(0, 3.5): return True
+
+        if cycle(70, 0.3): return True
+        if cycle(200, 0.4): return True
+        if cycle(70, 0.3): return True
+        if cycle(0, 1.5): return True
+
+        if cycle(200, 0.4): return True
         if cycle(0, 3): return True
 
         if cycle(70, 0.3): return True
