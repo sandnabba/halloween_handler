@@ -391,6 +391,9 @@ def api_scenario_reset():
     # Reset portal to rotating state
     print("Resetting portal to rotating state...")
     ha_handler.reset_portal()
+
+    print("→ Restoring normal lighting...")
+    ha_handler.activate_scene("scene.halloween_pa")
     
     print("Broadcasting status update to all clients...")
     broadcast_status()
