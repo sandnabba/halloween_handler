@@ -24,8 +24,12 @@ flowchart TB
     end
 
     subgraph HomeAssistantService
-        HA["Home Assistant
-        (Plejd Lights)"]
+        HA["Home Assistant"]
+    end
+
+    subgraph PlejdSystem
+        Plejd["Plejd
+        (Smart Lighting System)"]
     end
 
     subgraph WebInterface
@@ -39,6 +43,7 @@ flowchart TB
 
     Backend -->|"HTTP: /toggle, /red, /green, /reset"| ESP32
     Backend -->|"REST API: scenes/lights"| HA
+    HA -->|"Control lights via integration"| Plejd
     Backend <-->|"WebSocket: real-time updates"| WebUI
 ```
 
@@ -51,7 +56,8 @@ sequenceDiagram
     participant MQTT as MQTT Broker
     participant Controller as HA Controller<br/>(Python + Flask)
     participant Portal as RGB Portal<br/>(ESP32)
-    participant HA as Home Assistant<br/>(Plejd Lights)
+    participant HA as Home Assistant
+    participant Plejd as Plejd<br/>(Smart Lights)
     
     Note over Controller: Initial state:<br/>Lights ON (scene.halloween_pa)<br/>Portal GREEN (State 1)
     Note over Controller: Web dashboard available<br/>at :5000
@@ -79,13 +85,13 @@ sequenceDiagram
         Note over Portal: State 1 → State 2<br/>5 rapid RED blinks<br/>Then permanent RED
         
         Controller->>HA: Activate scene.halloween_av
-        Note over HA: Turn OFF all lights
+        HA->>Plejd: Turn OFF all lights
         
         Controller->>HA: Flicker entrance light<br/>(light.ytterbelysning_entre)
-        Note over HA: 3 cycles of spooky<br/>flicker patterns (~30s)
+        HA->>Plejd: 3 cycles of spooky<br/>flicker patterns (~30s)
         
         Controller->>HA: Activate scene.halloween_pa
-        Note over HA: Turn ON all lights
+        HA->>Plejd: Turn ON all lights
         
         Controller->>Portal: HTTP GET /state
         Portal->>Controller: Current state = 2

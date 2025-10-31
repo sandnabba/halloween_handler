@@ -17,6 +17,9 @@ Python backend service that orchestrates the entire Halloween experience. Subscr
 
 ESP32-based LED controller with WS2815 RGB strip (100 LEDs) and HC-SR04 ultrasonic sensor. Features three states: rotating gradient (default), red blink (alarm), and green blink (success). Publishes state changes to MQTT and exposes HTTP endpoints for control. Motion detection randomly triggers green or red effects. See [rgb_portal/README.md](rgb_portal/README.md) for hardware setup and firmware details.
 
+<img src="./rgb_portal/portal.jpg" alt="RGB portal" width="500">
+
+
 ### web_frontend
 
 Modern React + TypeScript dashboard with real-time WebSocket updates. Displays system status, portal state, and MQTT messages. Provides manual controls for triggering scenarios and portal states. Built with Vite for fast development. See [web_frontend/SETUP.md](web_frontend/SETUP.md) for configuration and development guide.

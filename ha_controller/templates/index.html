@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Halloween Controller</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #1a1a1a;
+            color: #f0f0f0;
+        }
+        h1 {
+            color: #ff6600;
+            text-align: center;
+        }
+        .status-card {
+            background-color: #2a2a2a;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #3a3a3a;
+        }
+        .status-item:last-child {
+            border-bottom: none;
+        }
+        .status-label {
+            font-weight: bold;
+            color: #ff9933;
+        }
+        .status-value {
+            color: #ffffff;
+        }
+        .btn {
+            background-color: #ff6600;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+            transition: background-color 0.3s;
+        }
+        .btn:hover {
+            background-color: #ff8833;
+        }
+        .btn:disabled {
+            background-color: #666;
+            cursor: not-allowed;
+        }
+        .btn-secondary {
+            background-color: #4a4a4a;
+        }
+        .btn-secondary:hover {
+            background-color: #5a5a5a;
+        }
+        .button-group {
+            text-align: center;
+            margin: 20px 0;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-ok {
+            background-color: #00ff00;
+        }
+        .status-running {
+            background-color: #ffaa00;
+            animation: pulse 1s infinite;
+        }
+        .status-cooldown {
+            background-color: #ff0000;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .message {
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+            text-align: center;
+        }
+        .message-success {
+            background-color: #2a4a2a;
+            border: 1px solid #00ff00;
+        }
+        .message-error {
+            background-color: #4a2a2a;
+            border: 1px solid #ff0000;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎃 Halloween Controller 🎃</h1>
+    
+    <div class="status-card">
+        <h2>System Status</h2>
+        <div id="status-content">
+            Loading...
+        </div>
+    </div>
+    
+    <div class="button-group">
+        <button class="btn" onclick="triggerScenario()" id="trigger-btn">
+            🎭 Trigger Scenario
+        </button>
+        <button class="btn btn-secondary" onclick="resetCooldown()">
+            ⏱️ Reset Cooldown
+        </button>
+    </div>
+    
+    <div class="status-card">
+        <h2>👻 Ghost Tracker</h2>
+        <div class="status-item">
+            <span class="status-label">Total Visitors:</span>
+            <span class="status-value" id="visitor-count">0</span>
+        </div>
+        <div class="button-group" style="margin-top: 15px;">
+            <button class="btn" onclick="addVisitors(1)">+1</button>
+            <button class="btn" onclick="addVisitors(2)">+2</button>
+            <button class="btn" onclick="addVisitors(3)">+3</button>
+            <button class="btn" onclick="addVisitors(4)">+4</button>
+            <button class="btn" onclick="addVisitors(5)">+5</button>
+        </div>
+        <div class="button-group">
+            <button class="btn" onclick="addVisitors(6)">+6</button>
+            <button class="btn" onclick="addVisitors(7)">+7</button>
+            <button class="btn" onclick="addVisitors(8)">+8</button>
+            <button class="btn" onclick="addVisitors(9)">+9</button>
+            <button class="btn" onclick="addVisitors(10)">+10</button>
+        </div>
+        <div class="button-group" style="margin-top: 10px;">
+            <button class="btn btn-secondary" onclick="resetVisitors()">
+                🔄 Reset Count
+            </button>
+        </div>
+    </div>
+    
+    <div id="message"></div>
+    
+    <script>
+        function getStatusIndicator(status) {
+            if (status.scenario_running) {
+                return '<span class="status-indicator status-running"></span>Running';
+            } else if (status.cooldown_remaining > 0) {
+                return '<span class="status-indicator status-cooldown"></span>Cooldown';
+            } else {
+                return '<span class="status-indicator status-ok"></span>Ready';
+            }
+        }
+        
+        function updateStatus() {
+            fetch('/api/status')
+                .then(response => response.json())
+                .then(data => {
+                    const status = data.data;
+                    const lastTrigger = status.last_trigger_time 
+                        ? new Date(status.last_trigger_time * 1000).toLocaleString()
+                        : 'Never';
+                    
+                    document.getElementById('status-content').innerHTML = `
+                        <div class="status-item">
+                            <span class="status-label">System State:</span>
+                            <span class="status-value">${getStatusIndicator(status)}</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Scenario Running:</span>
+                            <span class="status-value">${status.scenario_running ? 'Yes' : 'No'}</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Cooldown Remaining:</span>
+                            <span class="status-value">${status.cooldown_remaining}s</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Last Trigger:</span>
+                            <span class="status-value">${lastTrigger}</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Total Triggers:</span>
+                            <span class="status-value">${status.total_triggers}</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Last Person Count:</span>
+                            <span class="status-value">${status.last_person_count}</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Uptime Since:</span>
+                            <span class="status-value">${new Date(status.uptime_start).toLocaleString()}</span>
+                        </div>
+                    `;
+                    
+                    // Update visitor count
+                    document.getElementById('visitor-count').textContent = status.visitor_count || 0;
+                    
+                    // Update button state
+                    const triggerBtn = document.getElementById('trigger-btn');
+                    if (status.scenario_running || status.cooldown_remaining > 0) {
+                        triggerBtn.disabled = true;
+                    } else {
+                        triggerBtn.disabled = false;
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching status:', error);
+                    document.getElementById('status-content').innerHTML = 
+                        '<div style="color: #ff0000;">Error loading status</div>';
+                });
+        }
+        
+        function showMessage(text, isError = false) {
+            const messageDiv = document.getElementById('message');
+            messageDiv.className = 'message ' + (isError ? 'message-error' : 'message-success');
+            messageDiv.textContent = text;
+            setTimeout(() => {
+                messageDiv.textContent = '';
+                messageDiv.className = '';
+            }, 5000);
+        }
+        
+        function triggerScenario() {
+            fetch('/api/trigger-scenario', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        showMessage('✓ Scenario triggered successfully!');
+                        updateStatus();
+                    } else {
+                        showMessage('✗ ' + data.message, true);
+                    }
+                })
+                .catch(error => {
+                    showMessage('✗ Error triggering scenario', true);
+                    console.error('Error:', error);
+                });
+        }
+        
+        function resetCooldown() {
+            fetch('/api/reset-cooldown', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    showMessage('✓ Cooldown timer reset!');
+                    updateStatus();
+                })
+                .catch(error => {
+                    showMessage('✗ Error resetting cooldown', true);
+                    console.error('Error:', error);
+                });
+        }
+        
+        function addVisitors(count) {
+            fetch('/api/visitors/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ count: count })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        showMessage(`✓ Added ${count} visitor(s)! Total: ${data.visitor_count}`);
+                        updateStatus();
+                    } else {
+                        showMessage('✗ ' + data.message, true);
+                    }
+                })
+                .catch(error => {
+                    showMessage('✗ Error adding visitors', true);
+                    console.error('Error:', error);
+                });
+        }
+        
+        function resetVisitors() {
+            if (!confirm('Reset visitor count to 0?')) {
+                return;
+            }
+            
+            fetch('/api/visitors/reset', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    showMessage('✓ Visitor count reset!');
+                    updateStatus();
+                })
+                .catch(error => {
+                    showMessage('✗ Error resetting visitors', true);
+                    console.error('Error:', error);
+                });
+        }
+        
+        // Update status every 2 seconds
+        updateStatus();
+        setInterval(updateStatus, 2000);
+    </script>
+</body>
+</html>
