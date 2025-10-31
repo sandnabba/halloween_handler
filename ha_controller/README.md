@@ -154,3 +154,8 @@ ha_handler.py ─────────┬─ Home Assistant API client
 **Web interface not loading:**
 - Check configured WEB_PORT is available (default: 5000)
 - Check firewall settings
+
+## Todo
+
+* Refactor LED_Portal management into a proper class
+* Move web front to its own file
