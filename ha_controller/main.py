@@ -1,5 +1,6 @@
-import ha_handler
+from home_assistant_handler import HomeAssistantHandler
 from portal_handler import PortalHandler
+from scenario_handler import ScenarioHandler
 import paho.mqtt.client as mqtt
 import time
 from flask import Flask, jsonify, request
@@ -27,8 +28,10 @@ VISITORS_FILE = os.getenv("VISITORS_FILE", "visitors.json")
 if not BROKER_HOSTNAME:
     raise ValueError("BROKER_HOSTNAME must be set in .env file")
 
-# Initialize portal handler
+# Initialize handlers
 portal = PortalHandler()
+ha = HomeAssistantHandler()
+scenario = ScenarioHandler(portal, ha)
 
 # Global state variables
 status_lock = Lock()
@@ -117,7 +120,7 @@ def update_status():
             system_status["scenario_state"] = "Waiting"
         
         # Update health checks
-        system_status["ha_available"] = ha_handler.check_ha_health()
+        system_status["ha_available"] = ha.check_health()
         system_status["portal_online"] = portal.check_online()
 
 # WebSocket event handlers
@@ -151,7 +154,7 @@ def handle_ping_portal():
 def handle_ping_ha():
     """Ping Home Assistant to check connectivity"""
     print("🏥 HA ping requested via WebSocket")
-    is_healthy = ha_handler.check_ha_health()
+    is_healthy = ha.check_health()
     print(f"   HA health check result: {is_healthy}")
     if is_healthy:
         emit('ha_ping_response', {
@@ -293,7 +296,7 @@ def trigger_scenario_from_source(source):
             
             # Run the scenario (will check abort flag internally)
             print("→ Running scenario (lights, flicker, etc)...")
-            aborted = ha_handler.run_scenario()
+            aborted = scenario.run_scenario()
             
             if aborted:
                 print("⚠️  Scenario was aborted during execution")
@@ -397,7 +400,7 @@ def api_scenario_reset():
     portal.reset()
 
     print("→ Restoring normal lighting...")
-    ha_handler.activate_scene("scene.halloween_pa")
+    ha.activate_scene("scene.halloween_pa")
     
     print("Broadcasting status update to all clients...")
     broadcast_status()
@@ -419,14 +422,14 @@ def api_scenario_reset():
 @app.route('/api/ha/lights-off', methods=['POST'])
 def api_ha_lights_off():
     """Turn off all lights (activate scene.halloween_av)"""
-    if not ha_handler.HA_AVAILABLE:
+    if not ha.available:
         return jsonify({
             "status": "error",
             "message": "Home Assistant not available"
         }), 503
     
     try:
-        ha_handler.activate_scene("scene.halloween_av")
+        ha.activate_scene("scene.halloween_av")
         return jsonify({
             "status": "ok",
             "message": "Lights turned off"
@@ -440,14 +443,14 @@ def api_ha_lights_off():
 @app.route('/api/ha/lights-on', methods=['POST'])
 def api_ha_lights_on():
     """Turn on all lights (activate scene.halloween_pa)"""
-    if not ha_handler.HA_AVAILABLE:
+    if not ha.available:
         return jsonify({
             "status": "error",
             "message": "Home Assistant not available"
         }), 503
     
     try:
-        ha_handler.activate_scene("scene.halloween_pa")
+        ha.activate_scene("scene.halloween_pa")
         return jsonify({
             "status": "ok",
             "message": "Lights turned on"
@@ -461,7 +464,7 @@ def api_ha_lights_on():
 @app.route('/api/ha/flicker', methods=['POST'])
 def api_ha_flicker():
     """Trigger the flicker effect on entrance light"""
-    if not ha_handler.HA_AVAILABLE:
+    if not ha.available:
         return jsonify({
             "status": "error",
             "message": "Home Assistant not available"
@@ -470,7 +473,7 @@ def api_ha_flicker():
     try:
         # Run flicker in a background thread since it takes ~60 seconds
         def run_flicker():
-            ha_handler.flicker()
+            ha.flicker_effect()
         
         thread = Thread(target=run_flicker)
         thread.daemon = True
@@ -661,14 +664,14 @@ def main():
     print(f"✓ Visitor count loaded: {system_status['visitor_count']}")
     
     # Set up abort callback for scenario control
-    ha_handler.set_abort_check_callback(lambda: system_status.get("abort_requested", False))
+    scenario.set_abort_callback(lambda: system_status.get("abort_requested", False))
     print("✓ Abort callback initialized")
     
     # Check Home Assistant availability and update status
     with status_lock:
-        system_status["ha_available"] = ha_handler.HA_AVAILABLE
+        system_status["ha_available"] = ha.available
     
-    if ha_handler.HA_AVAILABLE:
+    if ha.available:
         print("✓ Home Assistant: Connected")
     else:
         print("✗ Home Assistant: UNAVAILABLE")
@@ -689,8 +692,8 @@ def main():
     
     # Set initial state (lights on, portal reset to rotating)
     print("\nSetting initial state...")
-    if ha_handler.HA_AVAILABLE:
-        ha_handler.activate_scene("scene.halloween_pa")
+    if ha.available:
+        ha.activate_scene("scene.halloween_pa")
     else:
         print("  Skipping HA scene activation (HA unavailable)")
     portal.reset()
@@ -707,7 +710,7 @@ def main():
     
     print("\n" + "=" * 50)
     print("System ready!")
-    if not ha_handler.HA_AVAILABLE:
+    if not ha.available:
         print("⚠️  Running in DEGRADED MODE (no HA lighting)")
     print(f"Web interface: http://localhost:{WEB_PORT}")
     print("Waiting for person detection or manual triggers...")

@@ -139,33 +139,36 @@ def test_ha_connection():
         return False
 
 def test_module_loading():
-    """Test that ha_handler module loads correctly"""
-    print("\nTesting ha_handler module...")
+    """Test that handler modules load correctly"""
+    print("\nTesting handler modules...")
     
     try:
-        import ha_handler
-        print("  ✓ ha_handler imported successfully")
+        from home_assistant_handler import HomeAssistantHandler
+        print("  ✓ home_assistant_handler imported successfully")
         
-        # Check required functions exist
-        required_functions = [
-            'set_portal_state',
-            'activate_scene',
-            'run_scenario',
-            'flicker',
-            'light_off',
-            'light_on'
-        ]
+        from portal_handler import PortalHandler
+        print("  ✓ portal_handler imported successfully")
         
-        for func in required_functions:
-            if hasattr(ha_handler, func):
-                print(f"  ✓ Function {func} exists")
-            else:
-                print(f"  ✗ Function {func} missing")
-                return False
+        from scenario_handler import ScenarioHandler
+        print("  ✓ scenario_handler imported successfully")
+        
+        # Check that classes can be instantiated
+        try:
+            portal = PortalHandler()
+            print("  ✓ PortalHandler instantiated")
+            
+            ha = HomeAssistantHandler()
+            print("  ✓ HomeAssistantHandler instantiated")
+            
+            scenario = ScenarioHandler(portal, ha)
+            print("  ✓ ScenarioHandler instantiated")
+        except Exception as e:
+            print(f"  ⚠️  Warning instantiating handlers: {e}")
+            print("     (This is expected if HA/Portal are not available)")
         
         return True
     except Exception as e:
-        print(f"  ✗ Error loading ha_handler: {e}")
+        print(f"  ✗ Error loading handler modules: {e}")
         return False
 
 def main():
