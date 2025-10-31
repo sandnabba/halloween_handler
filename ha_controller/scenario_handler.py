@@ -5,6 +5,8 @@ Home Assistant lighting effects and RGB portal states.
 """
 
 from time import sleep
+from threading import Thread
+import time
 from portal_handler import PortalHandler
 from home_assistant_handler import HomeAssistantHandler
 
@@ -33,6 +35,24 @@ class ScenarioHandler:
         """
         self.portal = portal
         self.ha = ha
+        
+        # Dependencies for trigger_from_source (injected by set_dependencies)
+        self.system_status = None
+        self.status_lock = None
+        self.broadcast_status = None
+    
+    def set_dependencies(self, system_status, status_lock, broadcast_status):
+        """
+        Set runtime dependencies for scenario triggering.
+        
+        Args:
+            system_status: Shared system status dictionary
+            status_lock: Threading lock for status updates
+            broadcast_status: Function to broadcast status to WebSocket clients
+        """
+        self.system_status = system_status
+        self.status_lock = status_lock
+        self.broadcast_status = broadcast_status
     
     def set_abort_callback(self, callback):
         """
@@ -121,3 +141,60 @@ class ScenarioHandler:
         print("Halloween scenario completed!")
         print("=" * 50)
         return False  # Completed without abort
+    
+    def trigger_from_source(self, source: str):
+        """
+        Trigger scenario in background thread.
+        
+        Args:
+            source: Trigger source identifier ("manual", "camera", "portal_red")
+        """
+        def run_async():
+            print(f"\n→ Scenario thread started (source: {source})")
+            with self.status_lock:
+                self.system_status["scenario_running"] = True
+                self.system_status["abort_requested"] = False
+                self.system_status["total_triggers"] += 1
+                print(f"  scenario_running = True")
+                print(f"  abort_requested = False (cleared)")
+                print(f"  total_triggers = {self.system_status['total_triggers']}")
+            self.broadcast_status()
+            
+            try:
+                # Check abort before running scenario
+                with self.status_lock:
+                    if self.system_status["abort_requested"]:
+                        print("⚠️  Abort requested before scenario - stopping")
+                        return
+                
+                # Run the scenario (will check abort flag internally)
+                print("→ Running scenario (lights, flicker, etc)...")
+                aborted = self.run_scenario()
+                
+                if aborted:
+                    print("⚠️  Scenario was aborted during execution")
+                    with self.status_lock:
+                        self.system_status["abort_requested"] = True  # Ensure flag reflects actual state
+                else:
+                    print("✓ Scenario completed successfully")
+            except Exception as e:
+                print(f"✗ Error in scenario: {e}")
+            finally:
+                with self.status_lock:
+                    was_aborted = self.system_status["abort_requested"]
+                    self.system_status["scenario_running"] = False
+                    # Only set cooldown if scenario wasn't aborted
+                    if not was_aborted:
+                        self.system_status["last_trigger_time"] = time.time()
+                        print(f"→ scenario_running = False")
+                        print(f"→ Starting cooldown timer")
+                    else:
+                        print(f"→ scenario_running = False")
+                        print(f"→ Cooldown NOT set (scenario was aborted)")
+                    self.system_status["abort_requested"] = False  # Clear flag
+                self.broadcast_status()
+                print("→ Scenario thread finished\n")
+        
+        thread = Thread(target=run_async)
+        thread.daemon = True
+        thread.start()
