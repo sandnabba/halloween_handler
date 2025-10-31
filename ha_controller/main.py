@@ -1,4 +1,5 @@
 import ha_handler
+from portal_handler import PortalHandler
 import paho.mqtt.client as mqtt
 import time
 from flask import Flask, jsonify, request
@@ -16,7 +17,7 @@ load_dotenv()
 # Configuration variables with defaults
 BROKER_HOSTNAME = os.getenv("BROKER_HOSTNAME")
 BROKER_PORT = int(os.getenv("BROKER_PORT", "1883"))
-PERSON_TOPIC = os.getenv("PERSON_TOPIC", "frigate/uppfarten/person")
+PERSON_TOPIC = os.getenv("PERSON_TOPIC", "frigate/insidan/person")
 PORTAL_STATE_TOPIC = os.getenv("PORTAL_STATE_TOPIC", "portal/state")
 COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "30"))
 WEB_PORT = int(os.getenv("WEB_PORT", "5000"))
@@ -25,6 +26,9 @@ VISITORS_FILE = os.getenv("VISITORS_FILE", "visitors.json")
 # Validate required configuration
 if not BROKER_HOSTNAME:
     raise ValueError("BROKER_HOSTNAME must be set in .env file")
+
+# Initialize portal handler
+portal = PortalHandler()
 
 # Global state variables
 status_lock = Lock()
@@ -114,7 +118,7 @@ def update_status():
         
         # Update health checks
         system_status["ha_available"] = ha_handler.check_ha_health()
-        system_status["portal_online"] = ha_handler.check_portal_online()
+        system_status["portal_online"] = portal.check_online()
 
 # WebSocket event handlers
 @socketio.on('connect')
@@ -129,7 +133,7 @@ def handle_disconnect():
 @socketio.on('ping_portal')
 def handle_ping_portal():
     """Ping the ESP32 portal to check connectivity"""
-    state_info = ha_handler.get_portal_state()
+    state_info = portal.get_state()
     if state_info:
         emit('portal_ping_response', {
             'success': True,
@@ -177,7 +181,7 @@ def api_status():
 @app.route('/api/portal/state', methods=['GET'])
 def api_portal_state():
     """Get current portal state from ESP32"""
-    state_info = ha_handler.get_portal_state()
+    state_info = portal.get_state()
     if state_info:
         return jsonify({
             "status": "ok",
@@ -192,7 +196,7 @@ def api_portal_state():
 @app.route('/api/portal/red', methods=['POST'])
 def api_portal_red():
     """Trigger red blink on portal"""
-    if ha_handler.trigger_red_blink():
+    if portal.trigger_red_blink():
         broadcast_status()
         return jsonify({
             "status": "ok",
@@ -207,7 +211,7 @@ def api_portal_red():
 @app.route('/api/portal/green', methods=['POST'])
 def api_portal_green():
     """Trigger green blink on portal"""
-    if ha_handler.trigger_green_blink():
+    if portal.trigger_green_blink():
         broadcast_status()
         return jsonify({
             "status": "ok",
@@ -222,7 +226,7 @@ def api_portal_green():
 @app.route('/api/portal/reset', methods=['POST'])
 def api_portal_reset():
     """Reset portal to rotating state"""
-    if ha_handler.reset_portal():
+    if portal.reset():
         broadcast_status()
         return jsonify({
             "status": "ok",
@@ -348,7 +352,7 @@ def api_trigger_scenario():
     
     # Set portal to red before triggering
     print("→ Setting portal to red...")
-    ha_handler.trigger_red_blink()
+    portal.trigger_red_blink()
     
     # Trigger scenario
     trigger_scenario_from_source("manual")
@@ -390,7 +394,7 @@ def api_scenario_reset():
     
     # Reset portal to rotating state
     print("Resetting portal to rotating state...")
-    ha_handler.reset_portal()
+    portal.reset()
 
     print("→ Restoring normal lighting...")
     ha_handler.activate_scene("scene.halloween_pa")
@@ -629,7 +633,7 @@ def on_message(client, userdata, msg):
                 
                 print("🎥 Camera detection - setting portal to red and triggering scenario!")
                 # First set portal to red
-                ha_handler.trigger_red_blink()
+                portal.trigger_red_blink()
                 # Then trigger scenario
                 trigger_scenario_from_source("camera")
         
@@ -689,7 +693,7 @@ def main():
         ha_handler.activate_scene("scene.halloween_pa")
     else:
         print("  Skipping HA scene activation (HA unavailable)")
-    ha_handler.reset_portal()
+    portal.reset()
     print("✓ Initial state configured")
     
     # Connect to MQTT broker

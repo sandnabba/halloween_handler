@@ -9,11 +9,14 @@ from dotenv import load_dotenv
 import os
 from time import sleep
 import requests
+from portal_handler import PortalHandler
 
 load_dotenv()
 HA_SERVER = os.getenv("HA_SERVER")
 HA_TOKEN = os.getenv("HA_TOKEN")
-PORTAL_IP = os.getenv("PORTAL_IP", "10.1.5.32")  # Default IP, override in .env
+
+# Initialize portal handler
+portal = PortalHandler()
 
 # Initialize the Home Assistant Client (may be unavailable)
 try:
@@ -61,17 +64,6 @@ def check_ha_health():
         print(f"   HA health check failed: {type(e).__name__}: {e}")
         return False
 
-def check_portal_online():
-    """
-    Check if ESP32 portal is online and responding.
-    Returns: True if portal is reachable, False otherwise
-    """
-    try:
-        response = requests.get(f"http://{PORTAL_IP}/state", timeout=3)
-        return response.status_code == 200
-    except requests.exceptions.RequestException:
-        return False
-
 flicker_light = "light.ytterbelysning_entre"
 #flicker_light = "light.kontoret_taklampa"
 
@@ -88,77 +80,6 @@ def should_abort():
     if _abort_check_callback:
         return _abort_check_callback()
     return False
-
-def get_portal_state():
-    """
-    Get the current portal state via HTTP.
-    Returns: dict with state info or None on error
-    """
-    try:
-        response = requests.get(f"http://{PORTAL_IP}/state", timeout=5)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            print(f"Failed to get portal state: {response.status_code}")
-            return None
-    except requests.exceptions.RequestException as e:
-        print(f"Error communicating with portal: {e}")
-        return None
-
-def trigger_red_blink():
-    """Trigger red blink state (persists until reset)"""
-    try:
-        response = requests.get(f"http://{PORTAL_IP}/red", timeout=5)
-        if response.status_code == 200:
-            print("Red blink triggered")
-            return True
-        else:
-            print(f"Failed to trigger red blink: {response.status_code}")
-            return False
-    except requests.exceptions.RequestException as e:
-        print(f"Error communicating with portal: {e}")
-        return False
-
-def trigger_green_blink():
-    """Trigger green blink state (auto-returns to rotating)"""
-    try:
-        response = requests.get(f"http://{PORTAL_IP}/green", timeout=5)
-        if response.status_code == 200:
-            print("Green blink triggered")
-            return True
-        else:
-            print(f"Failed to trigger green blink: {response.status_code}")
-            return False
-    except requests.exceptions.RequestException as e:
-        print(f"Error communicating with portal: {e}")
-        return False
-
-def reset_portal():
-    """Reset portal to rotating state"""
-    try:
-        response = requests.get(f"http://{PORTAL_IP}/reset", timeout=5)
-        if response.status_code == 200:
-            print("Portal reset to rotating state")
-            return True
-        else:
-            print(f"Failed to reset portal: {response.status_code}")
-            return False
-    except requests.exceptions.RequestException as e:
-        print(f"Error communicating with portal: {e}")
-        return False
-
-def set_portal_state(state):
-    """
-    Control the RGB portal state via HTTP.
-    State 1 (False): Green rotating animation (normal/reset)
-    State 2 (True): Red blinking then solid red (triggered)
-    
-    DEPRECATED: Use trigger_red_blink(), trigger_green_blink(), or reset_portal() instead
-    """
-    if state:
-        return trigger_red_blink()
-    else:
-        return reset_portal()
 
 def light_off(name):
     """Turn off a Home Assistant light"""
@@ -289,7 +210,7 @@ def run_scenario():
     
     # Set portal to red (state 2 - triggered)
     print("→ Triggering red blink on portal...")
-    trigger_red_blink()
+    portal.trigger_red_blink()
     
     if should_abort():
         print("⚠️  Abort detected after trigger_red_blink")
@@ -333,7 +254,7 @@ def run_scenario():
     
     # Reset portal to rotating (state 1 - normal)
     print("→ Resetting portal to rotating state...")
-    reset_portal()
+    portal.reset()
     
     print("=" * 50)
     print("Halloween scenario completed!")
