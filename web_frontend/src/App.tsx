@@ -8,6 +8,7 @@ interface SystemStatus {
   scenario_running: boolean
   scenario_state: string  // "Active", "Waiting", "Cooldown"
   auto_trigger_enabled: boolean
+  debug_mode: boolean  // Home Assistant calls are skipped
   total_triggers: number
   last_person_count: number
   portal_state: number
@@ -16,7 +17,7 @@ interface SystemStatus {
   uptime_start: string
   ha_available: boolean
   mqtt_connected: boolean
-  visitor_count: number  // Added visitor count
+  visitor_count: number
   last_mqtt_message: {
     topic: string
     payload: string
@@ -31,7 +32,17 @@ interface PingResponse {
   error?: string
 }
 
+interface ApiResponse {
+  status: 'ok' | 'error'
+  message: string
+  auto_trigger_enabled?: boolean
+  debug_mode?: boolean
+}
+
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://10.1.1.1:5000'
+
+// Roughly how long a full scenario takes (3 flicker rounds of ~22 s plus HA calls)
+const SCENARIO_SECONDS = 70
 
 function App() {
   const [socket, setSocket] = useState<Socket | null>(null)
@@ -42,51 +53,29 @@ function App() {
   const [haPingResponse, setHaPingResponse] = useState<PingResponse | null>(null)
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null)
   const [localCooldown, setLocalCooldown] = useState(0)
-  const [scenarioProgress, setScenarioProgress] = useState(0) // 0-60 seconds
-  const [scenarioStartTime, setScenarioStartTime] = useState<number | null>(null)
+  const [scenarioProgress, setScenarioProgress] = useState(0) // 0-SCENARIO_SECONDS
   const [addingVisitorCount, setAddingVisitorCount] = useState<number | null>(null) // Track which button is loading
 
-  // Scenario progress tracker (60 second duration)
+  // Scenario progress: seconds since this client saw the scenario start
+  const scenarioRunning = status?.scenario_running ?? false
   useEffect(() => {
-    if (!status?.scenario_running) {
-      setScenarioProgress(0)
-      setScenarioStartTime(null)
-      return
-    }
-
-    // Scenario just started
-    if (scenarioStartTime === null) {
-      setScenarioStartTime(Date.now())
-    }
-
-    // Update progress every 100ms
+    setScenarioProgress(0)
+    if (!scenarioRunning) return
+    const startTime = Date.now()
     const interval = setInterval(() => {
-      if (scenarioStartTime) {
-        const elapsed = (Date.now() - scenarioStartTime) / 1000 // seconds
-        setScenarioProgress(Math.min(elapsed, 60))
-      }
+      setScenarioProgress(Math.min((Date.now() - startTime) / 1000, SCENARIO_SECONDS))
     }, 100)
-
     return () => clearInterval(interval)
-  }, [status?.scenario_running, scenarioStartTime])
+  }, [scenarioRunning])
 
-  // Realtime cooldown countdown
+  // Count the cooldown down locally between status updates
+  const cooldownRemaining = status?.cooldown_remaining ?? 0
+  const lastTriggerTime = status?.last_trigger_time
   useEffect(() => {
-    if (!status) return
-
-    // Initialize local cooldown from status
-    setLocalCooldown(status.cooldown_remaining)
-
-    // Set up interval to count down every second
-    const interval = setInterval(() => {
-      setLocalCooldown((prev) => {
-        if (prev <= 0) return 0
-        return prev - 1
-      })
-    }, 1000)
-
+    setLocalCooldown(cooldownRemaining)
+    const interval = setInterval(() => setLocalCooldown(prev => Math.max(0, prev - 1)), 1000)
     return () => clearInterval(interval)
-  }, [status?.cooldown_remaining, status?.last_trigger_time])
+  }, [cooldownRemaining, lastTriggerTime])
 
   useEffect(() => {
     // Connect to WebSocket
@@ -130,137 +119,49 @@ function App() {
     setTimeout(() => setMessage(null), 5000)
   }
 
-  const handleTriggerScenario = async () => {
+  // POST to the backend and show the result. Returns true on success
+  const apiPost = async (
+    path: string,
+    successText?: string | ((data: ApiResponse) => string),
+    body?: object,
+  ): Promise<boolean> => {
     try {
-      const response = await fetch(`${BACKEND_URL}/api/trigger-scenario`, {
+      const response = await fetch(`${BACKEND_URL}${path}`, {
         method: 'POST',
+        ...(body && { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
       })
-      const data = await response.json()
-      if (data.status === 'ok') {
-        showMessage('✓ Scenario triggered successfully!')
-      } else {
+      const data: ApiResponse = await response.json()
+      if (data.status !== 'ok') {
         showMessage(`✗ ${data.message}`, 'error')
+        return false
       }
+      if (successText) {
+        showMessage(typeof successText === 'function' ? successText(data) : successText)
+      }
+      return true
     } catch (error) {
-      showMessage('✗ Error triggering scenario', 'error')
-      console.error('Error:', error)
+      console.error(`POST ${path} failed:`, error)
+      showMessage(`✗ Could not reach the backend (${path})`, 'error')
+      return false
     }
   }
 
-  const handleScenarioToggle = async () => {
-    // If scenario is running, stop it. Otherwise trigger it.
-    if (status?.scenario_running) {
-      // Stop scenario
-      handleScenarioReset()
-    } else {
-      // Trigger scenario
-      handleTriggerScenario()
-    }
-  }
-
-  const handleScenarioReset = async () => {
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/scenario/reset`, {
-        method: 'POST',
-      })
-      const data = await response.json()
-      if (data.status === 'ok') {
-        showMessage(`🔄 ${data.message}`)
-      } else {
-        showMessage(`✗ ${data.message}`, 'error')
-      }
-    } catch (error) {
-      showMessage('✗ Error resetting scenario', 'error')
-      console.error('Error:', error)
-    }
-  }
+  const handleScenarioToggle = () =>
+    status?.scenario_running
+      ? apiPost('/api/scenario/reset', data => `🔄 ${data.message}`)
+      : apiPost('/api/trigger-scenario', '✓ Scenario triggered successfully!')
 
   const handleResetCooldown = async () => {
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/reset-cooldown`, {
-        method: 'POST',
-      })
-      const data = await response.json()
-      if (data.status === 'ok') {
-        showMessage('⏱️ Cooldown reset!')
-        setLocalCooldown(0)
-      } else {
-        showMessage(`✗ ${data.message}`, 'error')
-      }
-    } catch (error) {
-      showMessage('✗ Error resetting cooldown', 'error')
-      console.error('Error:', error)
+    if (await apiPost('/api/reset-cooldown', '⏱️ Cooldown reset!')) {
+      setLocalCooldown(0)
     }
   }
 
-  const handleAutoTriggerToggle = async () => {
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/auto-trigger/toggle`, {
-        method: 'POST',
-      })
-      const data = await response.json()
-      if (data.status === 'ok') {
-        const statusIcon = data.auto_trigger_enabled ? '✅' : '⏸️'
-        showMessage(`${statusIcon} ${data.message}`)
-      } else {
-        showMessage(`✗ ${data.message}`, 'error')
-      }
-    } catch (error) {
-      showMessage('✗ Error toggling auto-trigger', 'error')
-      console.error('Error:', error)
-    }
-  }
+  const handleAutoTriggerToggle = () =>
+    apiPost('/api/auto-trigger/toggle', data => `${data.auto_trigger_enabled ? '✅' : '⏸️'} ${data.message}`)
 
-  const handlePortalRed = async () => {
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/portal/red`, {
-        method: 'POST',
-      })
-      const data = await response.json()
-      if (data.status === 'ok') {
-        showMessage('🔴 Red blink triggered!')
-      } else {
-        showMessage(`✗ ${data.message}`, 'error')
-      }
-    } catch (error) {
-      showMessage('✗ Error triggering red blink', 'error')
-      console.error('Error:', error)
-    }
-  }
-
-  const handlePortalGreen = async () => {
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/portal/green`, {
-        method: 'POST',
-      })
-      const data = await response.json()
-      if (data.status === 'ok') {
-        showMessage('🟢 Green blink triggered!')
-      } else {
-        showMessage(`✗ ${data.message}`, 'error')
-      }
-    } catch (error) {
-      showMessage('✗ Error triggering green blink', 'error')
-      console.error('Error:', error)
-    }
-  }
-
-  const handlePortalReset = async () => {
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/portal/reset`, {
-        method: 'POST',
-      })
-      const data = await response.json()
-      if (data.status === 'ok') {
-        showMessage('🔵 Portal reset to rotating!')
-      } else {
-        showMessage(`✗ ${data.message}`, 'error')
-      }
-    } catch (error) {
-      showMessage('✗ Error resetting portal', 'error')
-      console.error('Error:', error)
-    }
-  }
+  const handleDebugModeToggle = () =>
+    apiPost('/api/debug-mode/toggle', data => `🐞 ${data.message}`)
 
   const handlePingPortal = () => {
     if (socket) {
@@ -276,85 +177,14 @@ function App() {
     }
   }
 
-  const handleHALightsOff = async () => {
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/ha/lights-off`, {
-        method: 'POST',
-      })
-      const data = await response.json()
-      if (data.status === 'ok') {
-        showMessage('💡 All lights turned off!')
-      } else {
-        showMessage(`✗ ${data.message}`, 'error')
-      }
-    } catch (error) {
-      showMessage('✗ Error turning lights off', 'error')
-      console.error('Error:', error)
-    }
-  }
-
-  const handleHALightsOn = async () => {
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/ha/lights-on`, {
-        method: 'POST',
-      })
-      const data = await response.json()
-      if (data.status === 'ok') {
-        showMessage('💡 All lights turned on!')
-      } else {
-        showMessage(`✗ ${data.message}`, 'error')
-      }
-    } catch (error) {
-      showMessage('✗ Error turning lights on', 'error')
-      console.error('Error:', error)
-    }
-  }
-
-  const handleHAFlicker = async () => {
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/ha/flicker`, {
-        method: 'POST',
-      })
-      const data = await response.json()
-      if (data.status === 'ok') {
-        showMessage('⚡ Flicker effect started!')
-      } else {
-        showMessage(`✗ ${data.message}`, 'error')
-      }
-    } catch (error) {
-      showMessage('✗ Error starting flicker', 'error')
-      console.error('Error:', error)
-    }
-  }
-
   const handleAddVisitors = async (count: number) => {
-    // Mark button as loading
     setAddingVisitorCount(count)
-    
-    // Update local state immediately for instant feedback
-    setStatus(prev => prev ? { ...prev, visitor_count: prev.visitor_count + count } : prev)
-    
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/visitors/add`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ count }),
-      })
-      const data = await response.json()
-      if (data.status !== 'ok') {
-        showMessage(`✗ ${data.message}`, 'error')
-        // Revert on error
-        setStatus(prev => prev ? { ...prev, visitor_count: prev.visitor_count - count } : prev)
-      }
-    } catch (error) {
-      showMessage('✗ Error adding visitors', 'error')
-      console.error('Error:', error)
-      // Revert on error
-      setStatus(prev => prev ? { ...prev, visitor_count: prev.visitor_count - count } : prev)
-    } finally {
-      // Clear loading state
-      setAddingVisitorCount(null)
+    // Show the new count at once; revert if the backend refuses
+    setStatus(prev => prev && { ...prev, visitor_count: prev.visitor_count + count })
+    if (!(await apiPost('/api/visitors/add', undefined, { count }))) {
+      setStatus(prev => prev && { ...prev, visitor_count: prev.visitor_count - count })
     }
+    setAddingVisitorCount(null)
   }
 
   const getPortalStateName = (state: number): string => {
@@ -412,18 +242,24 @@ function App() {
         </div>
       )}
 
+      {status?.debug_mode && (
+        <div className="warning-banner">
+          🐞 Debug mode: the scenario runs as usual, but Home Assistant (the lights) is not controlled
+        </div>
+      )}
+
       <div className="main-content">
         {/* Top row: Scenario Control and Ghost Tracker */}
         <div className="top-row">
           {/* Scenario Control Card */}
           <div className="card portal-state-card">
           <h2>Scenario Control</h2>
-          {!status?.ha_available && (
+          {status && !status.ha_available && (
             <div className="warning-banner">
               ⚠️ Home Assistant Offline - Running in degraded mode (portal only)
             </div>
           )}
-          {!status?.portal_online && (
+          {status && !status.portal_online && (
             <div className="warning-banner">
               ⚠️ Portal Offline - ESP32 not responding
             </div>
@@ -476,7 +312,7 @@ function App() {
                           fill="none"
                           stroke="white"
                           strokeWidth="3"
-                          strokeDasharray={`${(scenarioProgress / 60) * 125.6} 125.6`}
+                          strokeDasharray={`${(scenarioProgress / SCENARIO_SECONDS) * 125.6} 125.6`}
                           strokeLinecap="round"
                           transform="rotate(-90 25 25)"
                         />
@@ -490,7 +326,7 @@ function App() {
               </span>
               {status?.scenario_running && (
                 <div className="scenario-timer">
-                  {Math.floor(scenarioProgress)}s / 60s
+                  {Math.floor(scenarioProgress)}s / ~{SCENARIO_SECONDS}s
                 </div>
               )}
             </button>
@@ -553,7 +389,7 @@ function App() {
           {/* Portal Controls Card */}
           <div className="card secondary-card">
             <h3>🚪 Portal Controls</h3>
-            {!status?.portal_online && (
+            {status && !status.portal_online && (
               <div className="warning-banner-small">
                 ⚠️ Portal Offline
               </div>
@@ -574,21 +410,21 @@ function App() {
             <div className="button-grid-compact">
               <button 
                 className="btn btn-small btn-red"
-                onClick={handlePortalRed}
+                onClick={() => apiPost('/api/portal/red', '🔴 Red blink triggered!')}
                 disabled={!status?.portal_online}
               >
                 🔴 Red
               </button>
               <button 
                 className="btn btn-small btn-green"
-                onClick={handlePortalGreen}
+                onClick={() => apiPost('/api/portal/green', '🟢 Green blink triggered!')}
                 disabled={!status?.portal_online}
               >
                 🟢 Green
               </button>
               <button 
                 className="btn btn-small btn-reset"
-                onClick={handlePortalReset}
+                onClick={() => apiPost('/api/portal/reset', '🔵 Portal reset to rotating!')}
                 disabled={!status?.portal_online}
               >
                 🔵 Reset
@@ -599,7 +435,7 @@ function App() {
           {/* Home Assistant Controls Card */}
           <div className="card secondary-card">
             <h3>🏠 Home Assistant Controls</h3>
-            {!status?.ha_available && (
+            {status && !status.ha_available && (
               <div className="warning-banner-small">
                 ⚠️ HA Offline
               </div>
@@ -607,21 +443,21 @@ function App() {
             <div className="button-grid-compact">
               <button 
                 className="btn btn-small btn-secondary"
-                onClick={handleHALightsOff}
+                onClick={() => apiPost('/api/ha/lights-off', '🌑 All lights turned off!')}
                 disabled={!status?.ha_available}
               >
-                � Lights Off
+                🌑 Lights Off
               </button>
               <button 
                 className="btn btn-small btn-secondary"
-                onClick={handleHALightsOn}
+                onClick={() => apiPost('/api/ha/lights-on', '💡 All lights turned on!')}
                 disabled={!status?.ha_available}
               >
-                � Lights On
+                💡 Lights On
               </button>
               <button 
                 className="btn btn-small btn-secondary"
-                onClick={handleHAFlicker}
+                onClick={() => apiPost('/api/ha/flicker', '⚡ Flicker effect started!')}
                 disabled={!status?.ha_available}
               >
                 ⚡ Flicker
@@ -640,16 +476,27 @@ function App() {
           {showDebug && (
             <div className="debug-content">
               <div className="debug-section">
+                <h3>Debug Mode</h3>
+                <div className="auto-trigger-section">
+                  <button
+                    className={`btn btn-toggle ${status?.debug_mode ? 'btn-toggle-on' : 'btn-toggle-off'}`}
+                    onClick={handleDebugModeToggle}
+                  >
+                    {status?.debug_mode ? '🐞 Debug Mode ON' : '🐞 Debug Mode OFF'}
+                  </button>
+                  <div className="auto-trigger-info">
+                    Everything runs as usual (camera, portal, timing), but no calls are sent to Home Assistant
+                  </div>
+                </div>
+              </div>
+
+              <div className="debug-section">
                 <h3>System Status</h3>
                 <div className="system-info">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
                       <strong>Home Assistant:</strong>{' '}
-                      <span className="status-indicator" style={{ 
-                        backgroundColor: status?.ha_available ? '#00ff00' : '#ff0000',
-                        display: 'inline-block',
-                        marginLeft: '8px'
-                      }}></span>
+                      <StatusDot on={status?.ha_available} />
                       {status?.ha_available ? ' Online' : ' Offline'}
                     </div>
                     <button 
@@ -677,11 +524,7 @@ function App() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
                       <strong>Portal (ESP32):</strong>{' '}
-                      <span className="status-indicator" style={{ 
-                        backgroundColor: status?.portal_online ? '#00ff00' : '#ff0000',
-                        display: 'inline-block',
-                        marginLeft: '8px'
-                      }}></span>
+                      <StatusDot on={status?.portal_online} />
                       {status?.portal_online ? ' Online' : ' Offline'}
                     </div>
                     <button 
@@ -708,11 +551,7 @@ function App() {
                   
                   <div>
                     <strong>MQTT Broker:</strong>{' '}
-                    <span className="status-indicator" style={{ 
-                      backgroundColor: status?.mqtt_connected ? '#00ff00' : '#ff0000',
-                      display: 'inline-block',
-                      marginLeft: '8px'
-                    }}></span>
+                    <StatusDot on={status?.mqtt_connected} />
                     {status?.mqtt_connected ? ' Connected' : ' Disconnected'}
                   </div>
                   
@@ -756,6 +595,15 @@ function App() {
         </div>
       </div>
     </div>
+  )
+}
+
+function StatusDot({ on }: { on: boolean | undefined }) {
+  return (
+    <span
+      className="status-indicator"
+      style={{ backgroundColor: on ? '#00ff00' : '#ff0000', display: 'inline-block', marginLeft: '8px' }}
+    />
   )
 }
 

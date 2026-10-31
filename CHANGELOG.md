@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026
+
+Home Assistant reinstalled from scratch; the flicker light is now `light.fasadbelysning_ytterbelysning_entre`.
+
+* Debug mode: the whole scenario runs, but no calls are sent to Home Assistant
+* Old Flask dashboard on port 5000 removed; the React frontend is the only UI
+* ha_controller refactored: shared `SystemState`, one trigger check, plain REST calls to Home Assistant (`homeassistant-api` dropped), paho-mqtt 2 callbacks
+
 ## 2025
 
 Major update. First publish to GitHub.

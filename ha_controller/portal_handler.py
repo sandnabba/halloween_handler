@@ -14,118 +14,67 @@ load_dotenv()
 class PortalHandler:
     """
     Handler for RGB Portal communication via HTTP.
-    
+
     Portal States:
-    - 1 (ROTATING): Green rotating animation (normal/idle state)
-    - 2 (BLINK_RED): Red blinking then solid red (triggered/alert state)
-    - 3 (BLINK_GREEN): Green blinking (success/acknowledgment state)
+    - 1 (ROTATING): Rotating animation (normal/idle state)
+    - 2 (BLINK_RED): Red blinking then solid red (triggered/alert state, until reset)
+    - 3 (BLINK_GREEN): Solid green while someone is in the portal
     """
-    
+
     STATE_ROTATING = 1
     STATE_BLINK_RED = 2
     STATE_BLINK_GREEN = 3
-    
-    def __init__(self, portal_ip: Optional[str] = None, timeout: int = 5):
+
+    def __init__(self, portal_ip: Optional[str] = None, timeout: int = 2):
         """
-        Initialize the PortalHandler.
-        
         Args:
             portal_ip: IP address of the ESP32 portal (defaults to env var PORTAL_IP or 10.1.5.32)
-            timeout: HTTP request timeout in seconds (default: 5)
+            timeout: HTTP request timeout in seconds for commands (default: 2)
         """
         self.portal_ip = portal_ip or os.getenv("PORTAL_IP", "10.1.5.32")
         self.timeout = timeout
         self.base_url = f"http://{self.portal_ip}"
-    
+
     def check_online(self) -> bool:
-        """
-        Check if ESP32 portal is online and responding.
-        
-        Returns:
-            True if portal is reachable, False otherwise
-        """
+        """Check if the portal responds (short timeout: called on every status update)."""
         try:
-            response = requests.get(f"{self.base_url}/state", timeout=3)
-            return response.status_code == 200
+            return requests.get(f"{self.base_url}/state", timeout=1).ok
         except requests.exceptions.RequestException:
             return False
-    
+
     def get_state(self) -> Optional[Dict[str, Any]]:
         """
         Get the current portal state via HTTP.
-        
+
         Returns:
             Dictionary with state info (e.g., {'state': 1}) or None on error
         """
         try:
             response = requests.get(f"{self.base_url}/state", timeout=self.timeout)
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print(f"Failed to get portal state: HTTP {response.status_code}")
-                return None
-        except requests.exceptions.RequestException as e:
-            print(f"Error communicating with portal: {e}")
+            response.raise_for_status()
+            return response.json()
+        except (requests.exceptions.RequestException, ValueError) as e:
+            print(f"Failed to get portal state: {e}")
             return None
-    
-    def trigger_red_blink(self) -> bool:
-        """
-        Trigger red blink state (persists until reset).
-        Sets portal to state 2 (BLINK_RED).
-        
-        Returns:
-            True on success, False on failure
-        """
-        try:
-            response = requests.get(f"{self.base_url}/red", timeout=self.timeout)
-            if response.status_code == 200:
-                print("Portal: Red blink triggered")
-                return True
-            else:
-                print(f"Failed to trigger red blink: HTTP {response.status_code}")
-                return False
-        except requests.exceptions.RequestException as e:
-            print(f"Error communicating with portal: {e}")
-            return False
-    
-    def trigger_green_blink(self) -> bool:
-        """
-        Trigger green blink state (auto-returns to rotating).
-        Sets portal to state 3 (BLINK_GREEN).
-        
-        Returns:
-            True on success, False on failure
-        """
-        try:
-            response = requests.get(f"{self.base_url}/green", timeout=self.timeout)
-            if response.status_code == 200:
-                print("Portal: Green blink triggered")
-                return True
-            else:
-                print(f"Failed to trigger green blink: HTTP {response.status_code}")
-                return False
-        except requests.exceptions.RequestException as e:
-            print(f"Error communicating with portal: {e}")
-            return False
-    
-    def reset(self) -> bool:
-        """
-        Reset portal to rotating state.
-        Sets portal to state 1 (ROTATING).
-        
-        Returns:
-            True on success, False on failure
-        """
-        try:
-            response = requests.get(f"{self.base_url}/reset", timeout=self.timeout)
-            if response.status_code == 200:
-                print("Portal: Reset to rotating state")
-                return True
-            else:
-                print(f"Failed to reset portal: HTTP {response.status_code}")
-                return False
-        except requests.exceptions.RequestException as e:
-            print(f"Error communicating with portal: {e}")
-            return False
-    
 
+    def _command(self, path: str, description: str) -> bool:
+        try:
+            response = requests.get(f"{self.base_url}/{path}", timeout=self.timeout)
+            response.raise_for_status()
+            print(f"Portal: {description}")
+            return True
+        except requests.exceptions.RequestException as e:
+            print(f"Portal: failed to {path}: {e}")
+            return False
+
+    def trigger_red_blink(self) -> bool:
+        """Set state 2 (BLINK_RED); stays red until reset."""
+        return self._command("red", "Red blink triggered")
+
+    def trigger_green_blink(self) -> bool:
+        """Set state 3 (BLINK_GREEN)."""
+        return self._command("green", "Green blink triggered")
+
+    def reset(self) -> bool:
+        """Set state 1 (ROTATING)."""
+        return self._command("reset", "Reset to rotating state")

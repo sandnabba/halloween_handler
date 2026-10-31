@@ -11,7 +11,7 @@ Please see [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system architecture d
 
 ### ha_controller
 
-Python backend service that orchestrates the entire Halloween experience. Subscribes to MQTT for camera person detection and portal state updates, controls Home Assistant scenes and lights, manages the RGB portal via HTTP, and provides a real-time WebSocket dashboard on port 5000. See [ha_controller/README.md](ha_controller/README.md) for full documentation.
+Python backend service that orchestrates the entire Halloween experience. Subscribes to MQTT for camera person detection and portal state updates, controls Home Assistant scenes and lights, manages the RGB portal via HTTP, and provides the REST API and WebSocket for the web frontend on port 5000. See [ha_controller/README.md](ha_controller/README.md) for full documentation.
 
 ### rgb_portal
 

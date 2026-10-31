@@ -60,7 +60,7 @@ sequenceDiagram
     participant Plejd as Plejd<br/>(Smart Lights)
     
     Note over Controller: Initial state:<br/>Lights ON (scene.halloween_pa)<br/>Portal GREEN (State 1)
-    Note over Controller: Web dashboard available<br/>at :5000
+    Note over Controller: API and WebSocket<br/>at :5000
     
     alt Automatic Trigger (MQTT)
         Camera->>MQTT: Publish person count<br/>Topic: frigate/uppfarten/person
@@ -87,8 +87,8 @@ sequenceDiagram
         Controller->>HA: Activate scene.halloween_av
         HA->>Plejd: Turn OFF all lights
         
-        Controller->>HA: Flicker entrance light<br/>(light.ytterbelysning_entre)
-        HA->>Plejd: 3 cycles of spooky<br/>flicker patterns (~30s)
+        Controller->>HA: Flicker entrance light<br/>(light.fasadbelysning_ytterbelysning_entre)
+        HA->>Plejd: 3 cycles of spooky<br/>flicker patterns (~65s)
         
         Controller->>HA: Activate scene.halloween_pa
         HA->>Plejd: Turn ON all lights
@@ -126,12 +126,12 @@ The following actions occur in parallel:
 - All Plejd-controlled lights in the home turn OFF
 
 #### 2c. Entrance Flicker
-- Entrance light (`light.ytterbelysning_entre`) performs spooky flicker sequence
-- 3 cycles of varying brightness and timing patterns (~30 seconds total)
+- Entrance light (`light.fasadbelysning_ytterbelysning_entre`) performs spooky flicker sequence
+- 3 cycles of varying brightness and timing patterns (~65 seconds total)
 - Creates atmospheric horror effect
 
 ### 3. Reset Phase
-After the flicker sequence completes (~30 seconds):
+After the flicker sequence completes (~65 seconds):
 - **Lights ON**: Home Assistant scene `scene.halloween_pa` restores normal lighting
 - **Portal GREEN**: Portal receives HTTP GET `/toggle` to return to State 1 (green rotating animation)
 - **Cooldown Reset**: Timer resets to prevent immediate re-triggering

@@ -3,401 +3,161 @@ API Routes
 RESTful API endpoints for the Halloween controller.
 """
 
-from flask import Blueprint, jsonify, request, render_template
 from threading import Thread
-
-# Create Blueprint
-api = Blueprint('api', __name__)
-
-# These will be injected by main.py
-portal = None
-ha = None
-scenario = None
-system_status = None
-status_lock = None
-broadcast_status = None
-get_cooldown_remaining = None
-save_visitor_count = None
+from typing import Callable
+from flask import Blueprint, jsonify, request
+from home_assistant_handler import HomeAssistantHandler
+from portal_handler import PortalHandler
+from scenario_handler import ScenarioHandler
+from system_state import SystemState
 
 
-def init_api_dependencies(portal_inst, ha_inst, scenario_inst, status, lock, broadcast_fn, cooldown_fn, save_fn):
-    """
-    Initialize API dependencies.
-    Called from main.py to inject required objects.
-    """
-    global portal, ha, scenario, system_status, status_lock, broadcast_status, get_cooldown_remaining, save_visitor_count
-    portal = portal_inst
-    ha = ha_inst
-    scenario = scenario_inst
-    system_status = status
-    status_lock = lock
-    broadcast_status = broadcast_fn
-    get_cooldown_remaining = cooldown_fn
-    save_visitor_count = save_fn
+def ok(message: str, **extra):
+    return jsonify({"status": "ok", "message": message, **extra})
 
 
-def update_status():
-    """Update dynamic status fields"""
-    with status_lock:
-        system_status["cooldown_remaining"] = get_cooldown_remaining()
-        
-        # Update scenario state
-        if system_status["scenario_running"]:
-            system_status["scenario_state"] = "Active"
-        elif system_status["cooldown_remaining"] > 0:
-            system_status["scenario_state"] = "Cooldown"
-        else:
-            system_status["scenario_state"] = "Waiting"
-        
-        # Update health checks
-        system_status["ha_available"] = ha.check_health()
-        system_status["portal_online"] = portal.check_online()
+def error(message: str, code: int):
+    return jsonify({"status": "error", "message": message}), code
 
 
-# ==================== System Status ====================
+def create_api(state: SystemState, portal: PortalHandler, ha: HomeAssistantHandler,
+               scenario: ScenarioHandler, refresh_status: Callable[[], dict],
+               broadcast_status: Callable[[], None]) -> Blueprint:
+    api = Blueprint('api', __name__)
 
-@api.route('/api/status', methods=['GET'])
-def api_status():
-    """Get current system status"""
-    update_status()
-    with status_lock:
-        return jsonify({
-            "status": "ok",
-            "data": system_status.copy()
-        })
+    # ==================== System Status ====================
 
+    @api.get('/api/status')
+    def api_status():
+        """Get current system status"""
+        return jsonify({"status": "ok", "data": refresh_status()})
 
-# ==================== Portal Control ====================
-
-@api.route('/api/portal/state', methods=['GET'])
-def api_portal_state():
-    """Get current portal state from ESP32"""
-    state_info = portal.get_state()
-    if state_info:
-        return jsonify({
-            "status": "ok",
-            "data": state_info
-        })
-    else:
-        return jsonify({
-            "status": "error",
-            "message": "Failed to get portal state"
-        }), 503
-
-
-@api.route('/api/portal/red', methods=['POST'])
-def api_portal_red():
-    """Trigger red blink on portal"""
-    if portal.trigger_red_blink():
+    @api.post('/api/debug-mode/toggle')
+    def api_debug_mode_toggle():
+        """Toggle debug mode: everything runs, but no calls are sent to Home Assistant"""
+        ha.debug_mode = not ha.debug_mode
         broadcast_status()
-        return jsonify({
-            "status": "ok",
-            "message": "Red blink triggered"
-        })
-    else:
-        return jsonify({
-            "status": "error",
-            "message": "Failed to trigger red blink"
-        }), 503
+        status_text = "enabled" if ha.debug_mode else "disabled"
+        print(f"🐞 Debug mode {status_text}")
+        return ok(f"Debug mode {status_text}", debug_mode=ha.debug_mode)
 
+    # ==================== Portal Control ====================
 
-@api.route('/api/portal/green', methods=['POST'])
-def api_portal_green():
-    """Trigger green blink on portal"""
-    if portal.trigger_green_blink():
+    @api.get('/api/portal/state')
+    def api_portal_state():
+        """Get current portal state from ESP32"""
+        state_info = portal.get_state()
+        if not state_info:
+            return error("Failed to get portal state", 503)
+        return jsonify({"status": "ok", "data": state_info})
+
+    def portal_action(action: Callable[[], bool], message: str):
+        if not action():
+            return error("Portal not responding", 503)
         broadcast_status()
-        return jsonify({
-            "status": "ok",
-            "message": "Green blink triggered"
-        })
-    else:
-        return jsonify({
-            "status": "error",
-            "message": "Failed to trigger green blink"
-        }), 503
+        return ok(message)
 
+    @api.post('/api/portal/red')
+    def api_portal_red():
+        """Trigger red blink on portal (persists until reset)"""
+        return portal_action(portal.trigger_red_blink, "Red blink triggered")
 
-@api.route('/api/portal/reset', methods=['POST'])
-def api_portal_reset():
-    """Reset portal to rotating state"""
-    if portal.reset():
+    @api.post('/api/portal/green')
+    def api_portal_green():
+        """Trigger green on portal"""
+        return portal_action(portal.trigger_green_blink, "Green blink triggered")
+
+    @api.post('/api/portal/reset')
+    def api_portal_reset():
+        """Reset portal to rotating state"""
+        return portal_action(portal.reset, "Portal reset to rotating state")
+
+    # ==================== Scenario Control ====================
+
+    @api.post('/api/trigger-scenario')
+    def api_trigger_scenario():
+        """Manually trigger the Halloween scenario (ignores the auto-trigger setting)"""
+        reason = scenario.try_trigger("manual")
+        if reason:
+            print(f"✗ Manual trigger rejected: {reason}")
+            return error(reason, 409)
+        return ok("Scenario triggered manually")
+
+    @api.post('/api/scenario/reset')
+    def api_scenario_reset():
+        """Stop a running scenario, clear the cooldown, reset portal and lights"""
+        was_running = scenario.abort()
+        portal.reset()
+        ha.lights_on()
         broadcast_status()
-        return jsonify({
-            "status": "ok",
-            "message": "Portal reset to rotating state"
-        })
-    else:
-        return jsonify({
-            "status": "error",
-            "message": "Failed to reset portal"
-        }), 503
+        message = "Scenario stopped and reset" if was_running else "Scenario reset"
+        print(f"🔄 {message}")
+        return ok(message)
 
+    @api.post('/api/reset-cooldown')
+    def api_reset_cooldown():
+        """Reset the cooldown timer"""
+        state.update(last_trigger_time=None)
+        broadcast_status()
+        return ok("Cooldown timer reset")
 
-# ==================== Scenario Control ====================
+    @api.post('/api/auto-trigger/toggle')
+    def api_auto_trigger_toggle():
+        """Toggle auto-trigger on/off"""
+        with state.lock:
+            enabled = state.data["auto_trigger_enabled"] = not state.data["auto_trigger_enabled"]
+        broadcast_status()
+        status_text = "enabled" if enabled else "disabled"
+        print(f"🔄 Auto-trigger {status_text}")
+        return ok(f"Auto-trigger {status_text}", auto_trigger_enabled=enabled)
 
-@api.route('/api/reset-cooldown', methods=['POST'])
-def api_reset_cooldown():
-    """Reset the cooldown timer"""
-    with status_lock:
-        system_status["last_trigger_time"] = None
-        system_status["cooldown_remaining"] = 0
-    
-    broadcast_status()
-    return jsonify({
-        "status": "ok",
-        "message": "Cooldown timer reset"
-    })
+    # ==================== Home Assistant Control ====================
 
+    def ha_action(action: Callable[[], bool], message: str):
+        if not action():
+            return error("Home Assistant call failed", 502)
+        return ok(message)
 
-@api.route('/api/auto-trigger/toggle', methods=['POST'])
-def api_auto_trigger_toggle():
-    """Toggle auto-trigger on/off"""
-    with status_lock:
-        system_status["auto_trigger_enabled"] = not system_status["auto_trigger_enabled"]
-        new_state = system_status["auto_trigger_enabled"]
-    
-    broadcast_status()
-    status_text = "enabled" if new_state else "disabled"
-    print(f"🔄 Auto-trigger {status_text}")
-    
-    return jsonify({
-        "status": "ok",
-        "auto_trigger_enabled": new_state,
-        "message": f"Auto-trigger {status_text}"
-    })
+    @api.post('/api/ha/lights-off')
+    def api_ha_lights_off():
+        """Turn off all lights (scene.halloween_av)"""
+        return ha_action(ha.lights_off, "Lights turned off")
 
+    @api.post('/api/ha/lights-on')
+    def api_ha_lights_on():
+        """Turn on all lights (scene.halloween_pa)"""
+        return ha_action(ha.lights_on, "Lights turned on")
 
-@api.route('/api/trigger-scenario', methods=['POST'])
-def api_trigger_scenario():
-    """Manually trigger the Halloween scenario"""
-    print("\n" + "="*50)
-    print("🎭 TRIGGER SCENARIO REQUEST RECEIVED (manual)")
-    print("="*50)
-    
-    with status_lock:
-        if system_status["scenario_running"]:
-            print("✗ Scenario already running - rejecting request")
-            print("="*50 + "\n")
-            return jsonify({
-                "status": "error",
-                "message": "Scenario is already running"
-            }), 409
-        
-        cooldown_remaining = get_cooldown_remaining()
-        if cooldown_remaining > 0:
-            print(f"✗ Cooldown active ({cooldown_remaining}s) - rejecting request")
-            print("="*50 + "\n")
-            return jsonify({
-                "status": "error",
-                "message": f"Cooldown active. Wait {cooldown_remaining}s"
-            }), 429
-    
-    print("✓ Starting scenario in background thread...")
-    
-    # Set portal to red before triggering
-    print("→ Setting portal to red...")
-    portal.trigger_red_blink()
-    
-    # Trigger scenario via scenario handler
-    scenario.trigger_from_source("manual")
-    
-    print("✓ Scenario triggered successfully")
-    print("="*50 + "\n")
-    
-    return jsonify({
-        "status": "ok",
-        "message": "Scenario triggered manually"
-    })
+    @api.post('/api/ha/flicker')
+    def api_ha_flicker():
+        """Run the flicker effect on the entrance light (in the background, ~65 s)"""
+        Thread(target=ha.flicker_effect, daemon=True).start()
+        return ok("Flicker effect started")
 
+    # ==================== Visitor Tracking ====================
 
-@api.route('/api/scenario/reset', methods=['POST'])
-def api_scenario_reset():
-    """Reset the scenario (clear cooldown, stop running scenario, and reset portal)"""
-    print("\n" + "="*50)
-    print("🔄 SCENARIO RESET REQUEST RECEIVED")
-    print("="*50)
-    
-    with status_lock:
-        was_running = system_status["scenario_running"]
-        print(f"Current state - scenario_running: {was_running}")
-        print(f"Current state - cooldown_remaining: {system_status['cooldown_remaining']}")
-        print(f"Current state - scenario_state: {system_status['scenario_state']}")
-        
-        if was_running:
-            print("⚠️  Setting abort_requested = True to stop running scenario")
-            system_status["abort_requested"] = True
-        
-        system_status["scenario_running"] = False  # Force stop scenario
-        system_status["last_trigger_time"] = None
-        system_status["cooldown_remaining"] = 0
-        system_status["scenario_state"] = "Waiting"
-        
-        print("NEW state - scenario_running: False")
-        print("NEW state - cooldown_remaining: 0")
-        print("NEW state - scenario_state: Waiting")
-        print(f"NEW state - abort_requested: {system_status['abort_requested']}")
-    
-    # Reset portal to rotating state
-    print("Resetting portal to rotating state...")
-    portal.reset()
+    @api.get('/api/visitors/get')
+    def api_visitors_get():
+        """Get current visitor count"""
+        return jsonify({"status": "ok", "visitor_count": state.snapshot()["visitor_count"]})
 
-    print("→ Restoring normal lighting...")
-    ha.activate_scene("scene.halloween_pa")
-    
-    print("Broadcasting status update to all clients...")
-    broadcast_status()
-    
-    message = "Scenario reset"
-    if was_running:
-        message = "Scenario stopped and reset"
-        print(f"✓ {message} (abort flag set)")
-    else:
-        print(f"✓ {message}")
-    
-    print("="*50 + "\n")
-    
-    return jsonify({
-        "status": "ok",
-        "message": message
-    })
+    @api.post('/api/visitors/add')
+    def api_visitors_add():
+        """Add visitors to the count"""
+        count = (request.get_json(silent=True) or {}).get('count', 1)
+        if not isinstance(count, int) or not 1 <= count <= 100:
+            return error("Count must be an integer between 1 and 100", 400)
+        total = state.add_visitors(count)
+        broadcast_status()
+        print(f"👻 Added {count} visitor(s). Total: {total}")
+        return ok(f"Added {count} visitor(s)", visitor_count=total, added=count)
 
+    @api.post('/api/visitors/reset')
+    def api_visitors_reset():
+        """Reset visitor count to zero"""
+        state.reset_visitors()
+        broadcast_status()
+        print("👻 Visitor count reset to 0")
+        return ok("Visitor count reset", visitor_count=0)
 
-# ==================== Home Assistant Control ====================
-
-@api.route('/api/ha/lights-off', methods=['POST'])
-def api_ha_lights_off():
-    """Turn off all lights (activate scene.halloween_av)"""
-    if not ha.available:
-        return jsonify({
-            "status": "error",
-            "message": "Home Assistant not available"
-        }), 503
-    
-    try:
-        ha.activate_scene("scene.halloween_av")
-        return jsonify({
-            "status": "ok",
-            "message": "Lights turned off"
-        })
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": f"Error: {str(e)}"
-        }), 500
-
-
-@api.route('/api/ha/lights-on', methods=['POST'])
-def api_ha_lights_on():
-    """Turn on all lights (activate scene.halloween_pa)"""
-    if not ha.available:
-        return jsonify({
-            "status": "error",
-            "message": "Home Assistant not available"
-        }), 503
-    
-    try:
-        ha.activate_scene("scene.halloween_pa")
-        return jsonify({
-            "status": "ok",
-            "message": "Lights turned on"
-        })
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": f"Error: {str(e)}"
-        }), 500
-
-
-@api.route('/api/ha/flicker', methods=['POST'])
-def api_ha_flicker():
-    """Trigger the flicker effect on entrance light"""
-    if not ha.available:
-        return jsonify({
-            "status": "error",
-            "message": "Home Assistant not available"
-        }), 503
-    
-    try:
-        # Run flicker in a background thread since it takes ~60 seconds
-        def run_flicker():
-            ha.flicker_effect()
-        
-        thread = Thread(target=run_flicker)
-        thread.daemon = True
-        thread.start()
-        
-        return jsonify({
-            "status": "ok",
-            "message": "Flicker effect started"
-        })
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": f"Error: {str(e)}"
-        }), 500
-
-
-# ==================== Visitor Tracking ====================
-
-@api.route('/api/visitors/get', methods=['GET'])
-def api_visitors_get():
-    """Get current visitor count"""
-    with status_lock:
-        return jsonify({
-            "status": "ok",
-            "visitor_count": system_status["visitor_count"]
-        })
-
-
-@api.route('/api/visitors/add', methods=['POST'])
-def api_visitors_add():
-    """Add visitors to the count"""
-    data = request.get_json()
-    count = data.get('count', 1)
-    
-    if not isinstance(count, int) or count < 1 or count > 100:
-        return jsonify({
-            "status": "error",
-            "message": "Count must be an integer between 1 and 100"
-        }), 400
-    
-    with status_lock:
-        system_status["visitor_count"] += count
-        new_count = system_status["visitor_count"]
-    
-    save_visitor_count(new_count)
-    broadcast_status()
-    
-    print(f"👻 Added {count} visitor(s). Total: {new_count}")
-    
-    return jsonify({
-        "status": "ok",
-        "visitor_count": new_count,
-        "added": count
-    })
-
-
-@api.route('/api/visitors/reset', methods=['POST'])
-def api_visitors_reset():
-    """Reset visitor count to zero"""
-    with status_lock:
-        system_status["visitor_count"] = 0
-    
-    save_visitor_count(0)
-    broadcast_status()
-    
-    print("👻 Visitor count reset to 0")
-    
-    return jsonify({
-        "status": "ok",
-        "visitor_count": 0,
-        "message": "Visitor count reset"
-    })
-
-
-# ==================== Frontend ====================
-
-@api.route('/')
-def index():
-    """Serve the web frontend"""
-    return render_template('index.html')
+    return api

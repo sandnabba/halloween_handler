@@ -65,7 +65,7 @@ The development server will start on port 5173.
 ## Verification
 
 1. **Portal**: Access `http://<PORTAL_IP>/` to see the portal control page
-2. **Backend**: Access `http://localhost:5000` to see the web dashboard
+2. **Backend**: `curl http://localhost:5000/api/status` should return the system status
 3. **Frontend**: Access `http://localhost:5173` (dev mode) to see the React app
 
 ## Next Steps

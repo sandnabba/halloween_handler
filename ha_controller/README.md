@@ -1,13 +1,13 @@
 # Halloween Controller
 
-Python backend service that orchestrates the entire Halloween experience. Listens to MQTT events from Frigate camera and RGB Portal, controls Home Assistant scenes and lights, and provides a real-time WebSocket dashboard.
+Python backend service that orchestrates the entire Halloween experience. Listens to MQTT events from Frigate camera and RGB Portal, controls Home Assistant scenes and lights, and provides the REST API and WebSocket used by the web frontend (`../web_frontend`).
 
 ## Features
 
 - **MQTT Integration**: Subscribes to Frigate camera person detection and portal state events
 - **Home Assistant Control**: Triggers scenes and controls lights via REST API
 - **Portal Integration**: Controls RGB portal LED states via HTTP
-- **WebSocket Dashboard**: Real-time status updates and manual controls (port 5000)
+- **WebSocket**: Real-time status updates for the web frontend (port 5000)
 - **REST API**: Programmatic access to trigger scenarios and manage state
 - **Cooldown Management**: 30-second cooldown between triggers
 - **Thread-Safe**: Concurrent handling of MQTT events and HTTP requests
@@ -25,12 +25,16 @@ BROKER_HOSTNAME="192.168.0.1"
 
 # Optional (defaults shown)
 BROKER_PORT=1883
-PERSON_TOPIC=frigate/uppfarten/person
+PERSON_TOPIC=frigate/insidan/person
 PORTAL_STATE_TOPIC=portal/state
 COOLDOWN_SECONDS=30
 WEB_PORT=5000
 VISITORS_FILE=visitors.json
+FLICKER_LIGHT=light.fasadbelysning_ytterbelysning_entre
+DEBUG_MODE=false
 ```
+
+`DEBUG_MODE=true` starts the controller in debug mode (also toggled from the web frontend's debug panel): everything runs as usual (MQTT triggers, portal, timing, cooldown), but no service calls are sent to Home Assistant, so the lights are left alone. The calls are logged instead.
 
 See [../QUICKSTART.md](../QUICKSTART.md) for detailed setup instructions.
 
@@ -46,22 +50,6 @@ The service will start on port 5000 and automatically:
 2. Connect to MQTT broker
 3. Listen for person detection and portal state events
 
-## Web Dashboard
-
-Access at `http://localhost:5000`
-
-**Displays:**
-- System state (Ready/Running/Cooldown)
-- Cooldown remaining time
-- Last trigger timestamp and person count
-- Total triggers count
-- System uptime
-
-**Controls:**
-- Trigger Scenario (manual activation)
-- Reset Cooldown
-- Portal controls (red/green/reset)
-
 ## API Endpoints
 
 ### Backend REST API
@@ -70,6 +58,9 @@ Access at `http://localhost:5000`
 - `GET /api/status` - Get current system status (state, cooldown, triggers, uptime)
 - `POST /api/trigger-scenario` - Manually trigger Halloween scenario
 - `POST /api/reset-cooldown` - Reset cooldown timer
+- `POST /api/scenario/reset` - Stop a running scenario, clear cooldown, reset portal and lights
+- `POST /api/auto-trigger/toggle` - Toggle triggering from MQTT (camera and portal)
+- `POST /api/debug-mode/toggle` - Toggle debug mode (no calls to Home Assistant)
 
 **Portal Control:**
 - `GET /api/portal/state` - Get current portal state (1/2/3)
@@ -88,7 +79,7 @@ Access at `http://localhost:5000`
 
 ### MQTT Topics (Subscribed)
 
-- `frigate/uppfarten/person` - Person detection count (triggers scenario when ≥ 1)
+- `frigate/insidan/person` - Person detection count (triggers scenario when ≥ 1)
 - `portal/state` - Portal state updates (1=ROTATING, 2=RED, 3=GREEN)
 
 ## Scenario Flow
@@ -97,10 +88,10 @@ When triggered (by MQTT person detection or manual API call):
 
 1. **Portal → Red**: Set portal to State 2 (red blinking, then solid)
 2. **Lights Off**: Activate `scene.halloween_av`
-3. **Flicker Effect**: Run spooky entrance light sequence (~30s)
+3. **Flicker Effect**: Run spooky entrance light sequence (3 rounds, ~65s)
 4. **Lights On**: Activate `scene.halloween_pa`
-5. **Portal → Green**: Return portal to State 1 (green rotating)
-6. **Cooldown**: Start 30-second cooldown timer
+5. **Portal → Rotating**: Return portal to State 1
+6. **Cooldown**: Start 30-second cooldown timer (not after an abort)
 
 ## Requirements
 
@@ -119,22 +110,20 @@ When triggered (by MQTT person detection or manual API call):
 ## Architecture
 
 ```
-main.py (main thread) ─┬─ Flask web server (background thread)
-                       │   ├─ WebSocket dashboard
-                       │   ├─ REST API (/api/*)
-                       │   └─ Static web UI
-                       │
-                       └─ MQTT client (blocking)
-                           └─ Subscribes to person detection & portal state
+main.py (main thread) ──────┬─ Flask web server (background thread)
+                            │   ├─ websocket_handlers.py (status updates, pings)
+                            │   └─ api_routes.py (REST API, /api/*)
+                            │
+                            └─ MQTT client (blocking)
+                                └─ Subscribes to person detection & portal state
 
-ha_handler.py ─────────┬─ Home Assistant API client
-                       ├─ Portal HTTP client
-                       ├─ Scene activation
-                       ├─ Light control
-                       └─ Flicker effects
+scenario_handler.py ─────── Runs the scenario in a background thread
+home_assistant_handler.py ─ Home Assistant REST API: scenes, lights, flicker, debug mode
+portal_handler.py ───────── ESP32 portal over HTTP
+system_state.py ─────────── Shared status and visitor count
 ```
 
-**Thread Safety:** Global `status_lock` ensures safe access to shared state between MQTT handler (main thread) and Flask API handlers (Flask thread).
+**Thread Safety:** `SystemState` holds the status behind one lock, shared by the MQTT client (main thread), the Flask handlers and the scenario thread. `ScenarioHandler.try_trigger` checks and claims the scenario under that lock, so two triggers can't both start it.
 
 ## Troubleshooting
 
@@ -151,11 +140,10 @@ ha_handler.py ─────────┬─ Home Assistant API client
 - Verify broker is running and reachable
 - Verify Frigate is publishing to configured PERSON_TOPIC
 
-**Web interface not loading:**
+**Web frontend can't reach the backend:**
 - Check configured WEB_PORT is available (default: 5000)
 - Check firewall settings
 
 ## Todo
 
 * Refactor LED_Portal management into a proper class
-* Move web front to its own file
