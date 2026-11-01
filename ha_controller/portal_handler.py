@@ -35,12 +35,17 @@ class PortalHandler:
         self.timeout = timeout
         self.base_url = f"http://{self.portal_ip}"
 
-    def check_online(self) -> bool:
-        """Check if the portal responds (short timeout: called on every status update)."""
+    def poll(self) -> Optional[Dict[str, Any]]:
+        """
+        Health check: the portal's /state (state and passage count), or None if
+        it doesn't respond. Short timeout and no logging, as it runs every 10 s.
+        """
         try:
-            return requests.get(f"{self.base_url}/state", timeout=1).ok
-        except requests.exceptions.RequestException:
-            return False
+            response = requests.get(f"{self.base_url}/state", timeout=1)
+            response.raise_for_status()
+            return response.json()
+        except (requests.exceptions.RequestException, ValueError):
+            return None
 
     def get_state(self) -> Optional[Dict[str, Any]]:
         """

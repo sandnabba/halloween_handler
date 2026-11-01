@@ -50,7 +50,8 @@ See [QUICKSTART.md](QUICKSTART.md) for setup instructions.
 ### 🎯 Future Enhancements
 
 - [ ] Add support for controling audio effects
-- [ ] Automate portal reset
+- [ ] 2027: Start a Spotify playlist or track on a Chromecast (`chromecast-garaget` 10.1.99.11 or `chromecast-koket` 10.1.99.10, VLAN 99) from the scenario, through Home Assistant so debug mode covers it. Preferred: [Spotcast](https://github.com/fondberg/spotcast) (`spotcast.start` with a `spotify:playlist:…`/`spotify:track:…` URI; works on an idle Chromecast; needs Spotify Premium, the Google Cast integration and cookies from the Spotify web player; install into `custom_components/` via Ansible like hass_plejd). HA's own Spotify integration also works, but Spotify's API often doesn't list an idle Chromecast. Decide: which Chromecast, which playlist, and music all evening or only during the scenario.
+- [x] Automate portal reset (2026: reset to rotating when the cooldown ends)
 - [ ] Create mobile app?
 - [ ] Add portal state history/timeline view
 - [ ] Add metrics/analytics dashboard

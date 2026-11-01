@@ -14,6 +14,7 @@ interface SystemStatus {
   portal_state: number
   portal_last_update: string | null
   portal_online: boolean
+  portal_passages: number | null  // Counted by the portal's sensor
   uptime_start: string
   ha_available: boolean
   mqtt_connected: boolean
@@ -555,6 +556,7 @@ function App() {
                     {status?.mqtt_connected ? ' Connected' : ' Disconnected'}
                   </div>
                   
+                  <div><strong>Portal Passages:</strong> {status?.portal_passages ?? 'N/A'}</div>
                   <div><strong>Total Triggers:</strong> {status?.total_triggers || 0}</div>
                   <div><strong>Last Person Count:</strong> {status?.last_person_count || 0}</div>
                   <div><strong>Scenario Running:</strong> {status?.scenario_running ? 'Yes' : 'No'}</div>

@@ -105,7 +105,9 @@ curl http://<ESP32-IP>/green
 # Reset to ROTATING state
 curl http://<ESP32-IP>/reset
 
-# Get current state (1=ROTATING, 2=BLINK_RED, 3=BLINK_GREEN)
+# Get current state (1=ROTATING, 2=BLINK_RED, 3=BLINK_GREEN) and the passage count,
+# e.g. {"state":1,"passages":42}. The count is kept in flash (survives reboots and
+# OTA) and is shown in the controller's debug panel. It is not published to MQTT.
 curl http://<ESP32-IP>/state
 
 # Get ultrasonic sensor distance reading

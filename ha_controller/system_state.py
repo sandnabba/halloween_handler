@@ -20,12 +20,12 @@ class SystemState:
             "last_trigger_time": None,
             "scenario_running": False,
             "auto_trigger_enabled": True,  # Trigger automatically from MQTT (camera and portal)
-            "debug_mode": False,  # Mirrors HomeAssistantHandler.debug_mode
             "total_triggers": 0,
             "last_person_count": 0,
             "portal_state": 1,  # 1=ROTATING, 2=BLINK_RED, 3=BLINK_GREEN
             "portal_last_update": None,
             "portal_online": False,
+            "portal_passages": None,  # Passages counted by the portal's sensor (from its /state)
             "ha_available": False,
             "mqtt_connected": False,
             "last_mqtt_message": None,

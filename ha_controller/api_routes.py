@@ -21,7 +21,7 @@ def error(message: str, code: int):
 
 
 def create_api(state: SystemState, portal: PortalHandler, ha: HomeAssistantHandler,
-               scenario: ScenarioHandler, refresh_status: Callable[[], dict],
+               scenario: ScenarioHandler, get_status: Callable[[], dict],
                broadcast_status: Callable[[], None]) -> Blueprint:
     api = Blueprint('api', __name__)
 
@@ -30,7 +30,7 @@ def create_api(state: SystemState, portal: PortalHandler, ha: HomeAssistantHandl
     @api.get('/api/status')
     def api_status():
         """Get current system status"""
-        return jsonify({"status": "ok", "data": refresh_status()})
+        return jsonify({"status": "ok", "data": get_status()})
 
     @api.post('/api/debug-mode/toggle')
     def api_debug_mode_toggle():

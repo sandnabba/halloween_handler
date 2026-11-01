@@ -4,6 +4,7 @@
 #include <WebServer.h>
 #include <PubSubClient.h>
 #include <ArduinoOTA.h>
+#include <Preferences.h>
 #include "secrets.h"
 
 // WiFi configuration from secrets.h
@@ -51,7 +52,12 @@ int rotatingPosition = 0;
 #define ANIMATION_SPEED 75
 
 // Rotating effect configuration
-CRGB rotatingSpotColor = CRGB(0, 255, 0); // Spot color (default: bright green)
+#define NUM_SPOTS 4              // Rotating light points, evenly spread
+#define SPOT_RADIUS 6            // LEDs on each side of a spot's centre that are lit
+#define BASE_LEVEL 12            // Background between the spots (0-255 of the base color)
+#define SPOT_CORE_WHITE 70       // White added to each spot's centre LED (0-255)
+#define ROTATING_BRIGHTNESS 160  // Global brightness in ROTATING (0-255)
+#define BLINK_BRIGHTNESS 50      // Global brightness for red and green (0-255)
 
 // Color transition configuration for base color (Blue -> Purple -> Pink)
 CRGB colorBlue = CRGB(0, 0, 255);     // Blue
@@ -72,6 +78,7 @@ struct BlinkConfig {
 // State-specific configurations
 BlinkConfig redBlinkConfig = {CRGB::Red, 5, 200, true};
 BlinkConfig greenBlinkConfig = {CRGB::Green, 0, 0, true};  // Solid green, stays until manually cleared
+BlinkConfig redReblinkConfig = {CRGB::Red, 3, 200, true};   // Someone passes while already red
 
 // Variables for blink animation
 unsigned long blinkStartTime = 0;
@@ -103,6 +110,10 @@ unsigned long lastPassageEndTime = 0; // When last passage ended
 #define MIN_PASSAGE_DURATION 1500 // ms - minimum time to stay green during passage
 #define PASSAGE_COOLDOWN 1000 // ms - cooldown after passage before next trigger
 
+// Passage counter, kept in flash (NVS) so it survives reboots and OTA updates
+Preferences prefs;
+uint32_t passageCount = 0;
+
 // Variables for WiFi reconnection
 unsigned long lastWiFiReconnectAttempt = 0;
 #define WIFI_RECONNECT_INTERVAL 5000 // ms - try reconnecting every 5 seconds
@@ -115,125 +126,48 @@ void updateLEDs();
 void publishStateToMQTT();
 void reconnectMQTT();
 
+// Level (0-255) of a LED at distance d from a spot's centre: full at the
+// centre, falling off quadratically to 0 beyond SPOT_RADIUS
+uint8_t spotLevel(int d) {
+  if (d > SPOT_RADIUS) return 0;
+  uint16_t linear = 255 - (255 * d) / (SPOT_RADIUS + 1);
+  return (linear * linear) / 255;
+}
+
 // Function to draw rotating effect
 void drawRotatingEffect() {
-  // 4 punkter jämnt fördelade på 140 LEDs: 0, 35, 70, 105
-  int secondPos = (rotatingPosition + 35) % NUM_LEDS;  // 90 degrees (140/4 = 35)
-  int thirdPos = (rotatingPosition + 70) % NUM_LEDS;   // 180 degrees
-  int fourthPos = (rotatingPosition + 105) % NUM_LEDS; // 270 degrees
-  
-  // Calculate current base color by blending between blue -> purple -> pink
-  CRGB rotatingBaseColor;
+  // Base color, blending blue -> purple -> pink as colorPhase goes 0.0 -> 2.0
+  CRGB baseColor;
   if (colorPhase < 1.0) {
-    // Blend from blue to purple (phase 0.0 to 1.0)
-    rotatingBaseColor = blend(colorBlue, colorPurple, (uint8_t)(colorPhase * 255));
+    baseColor = blend(colorBlue, colorPurple, (uint8_t)(colorPhase * 255));
   } else {
-    // Blend from purple to pink (phase 1.0 to 2.0)
-    rotatingBaseColor = blend(colorPurple, colorPink, (uint8_t)((colorPhase - 1.0) * 255));
+    baseColor = blend(colorPurple, colorPink, (uint8_t)((colorPhase - 1.0) * 255));
   }
-  
-  for(int i = 0; i < NUM_LEDS; i++) {
-    // Set base color (dim version of the blended color)
-    leds[i] = rotatingBaseColor;
-    leds[i].nscale8(50); // Dim to 20% brightness for base
-    
-    // First rotating light point (21 LEDs wide with fade: center + 10 on each side)
-    int dist1 = abs(i - rotatingPosition);
-    if (dist1 > NUM_LEDS / 2) dist1 = NUM_LEDS - dist1; // Wrapping
-    
-    if (dist1 == 0) {
-      leds[i] = rotatingBaseColor; // Center - max brightness
-    } else if (dist1 <= 2) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(240); // 94% brightness
-    } else if (dist1 <= 4) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(210); // 82% brightness
-    } else if (dist1 <= 6) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(180); // 71% brightness
-    } else if (dist1 <= 8) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(140); // 55% brightness
-    } else if (dist1 <= 10) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(90); // 35% brightness
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    // Brightest of the dim background and the nearest spot
+    uint8_t level = BASE_LEVEL;
+    for (int s = 0; s < NUM_SPOTS; s++) {
+      int spotPos = (rotatingPosition + s * NUM_LEDS / NUM_SPOTS) % NUM_LEDS;
+      int d = abs(i - spotPos);
+      if (d > NUM_LEDS / 2) d = NUM_LEDS - d; // Wrapping
+      uint8_t l = spotLevel(d);
+      if (l > level) level = l;
     }
-    
-    // Second rotating light point (90 degrees, 21 LEDs wide with fade)
-    int dist2 = abs(i - secondPos);
-    if (dist2 > NUM_LEDS / 2) dist2 = NUM_LEDS - dist2; // Wrapping
-    
-    if (dist2 == 0) {
-      leds[i] = rotatingBaseColor; // Center - max brightness
-    } else if (dist2 <= 2) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(240); // 94% brightness
-    } else if (dist2 <= 4) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(210); // 82% brightness
-    } else if (dist2 <= 6) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(180); // 71% brightness
-    } else if (dist2 <= 8) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(140); // 55% brightness
-    } else if (dist2 <= 10) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(90); // 35% brightness
-    }
-    
-    // Third rotating light point (180 degrees, 21 LEDs wide with fade)
-    int dist3 = abs(i - thirdPos);
-    if (dist3 > NUM_LEDS / 2) dist3 = NUM_LEDS - dist3; // Wrapping
-    
-    if (dist3 == 0) {
-      leds[i] = rotatingBaseColor; // Center - max brightness
-    } else if (dist3 <= 2) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(240); // 94% brightness
-    } else if (dist3 <= 4) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(210); // 82% brightness
-    } else if (dist3 <= 6) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(180); // 71% brightness
-    } else if (dist3 <= 8) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(140); // 55% brightness
-    } else if (dist3 <= 10) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(90); // 35% brightness
-    }
-    
-    // Fourth rotating light point (270 degrees, 21 LEDs wide with fade)
-    int dist4 = abs(i - fourthPos);
-    if (dist4 > NUM_LEDS / 2) dist4 = NUM_LEDS - dist4; // Wrapping
-    
-    if (dist4 == 0) {
-      leds[i] = rotatingBaseColor; // Center - max brightness
-    } else if (dist4 <= 2) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(240); // 94% brightness
-    } else if (dist4 <= 4) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(210); // 82% brightness
-    } else if (dist4 <= 6) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(180); // 71% brightness
-    } else if (dist4 <= 8) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(140); // 55% brightness
-    } else if (dist4 <= 10) {
-      leds[i] = rotatingBaseColor;
-      leds[i].nscale8(90); // 35% brightness
+
+    leds[i] = baseColor;
+    leds[i].nscale8(level);
+    if (level == 255) {
+      leds[i] += CRGB(SPOT_CORE_WHITE, SPOT_CORE_WHITE, SPOT_CORE_WHITE); // White-hot centre
     }
   }
+  FastLED.setBrightness(ROTATING_BRIGHTNESS);
   FastLED.show();
 }
 
 // Function to draw blink effect
 void drawBlinkEffect() {
+  FastLED.setBrightness(BLINK_BRIGHTNESS);
   unsigned long elapsed = millis() - blinkStartTime;
   
   // Calculate total duration based on numBlinks
@@ -363,6 +297,8 @@ void handleToggle() {
 void handleState() {
   String response = "{\"state\":";
   response += (currentState == ROTATING) ? "1" : ((currentState == BLINK_RED) ? "2" : "3");
+  response += ",\"passages\":";
+  response += passageCount;
   response += "}\n";
   
   server.send(200, "application/json", response);
@@ -405,7 +341,7 @@ void handleRoot() {
   html += "<li>GET /red - Trigger red blink (persists until reset)</li>";
   html += "<li>GET /green - Trigger green blink (returns to ROTATING)</li>";
   html += "<li>GET /reset - Reset to ROTATING state</li>";
-  html += "<li>GET /state - Get current state (1=ROTATING, 2=BLINK_RED, 3=BLINK_GREEN)</li>";
+  html += "<li>GET /state - Get current state (1=ROTATING, 2=BLINK_RED, 3=BLINK_GREEN) and the passage count</li>";
   html += "<li>GET /distance - Get current ultrasonic sensor distance</li>";
   html += "<li>GET /signal - Get WiFi signal strength</li>";
   html += "</ul>";
@@ -450,6 +386,40 @@ void handleDistance() {
   response += (distance < DETECTION_RANGE && distance >= MIN_DETECTION_DISTANCE) ? "true" : "false";
   response += "}\n";
   
+  server.send(200, "application/json", response);
+}
+
+// Raw sensor timing, for troubleshooting the wiring: the ECHO level at rest,
+// and when ECHO rises and falls after a trigger (-1 = never, within 40 ms)
+void handleSensorDebug() {
+  int echoIdle = digitalRead(ECHO_PIN);
+
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  long riseUs = -1, fallUs = -1;
+  unsigned long start = micros();
+  while (micros() - start < 40000) {
+    int level = digitalRead(ECHO_PIN);
+    if (riseUs < 0 && level == HIGH) {
+      riseUs = micros() - start;
+    } else if (riseUs >= 0 && level == LOW) {
+      fallUs = micros() - start;
+      break;
+    }
+  }
+
+  String response = "{\"echoIdle\":";
+  response += echoIdle;
+  response += ",\"riseUs\":";
+  response += riseUs;
+  response += ",\"fallUs\":";
+  response += fallUs;
+  response += "}\n";
+
   server.send(200, "application/json", response);
 }
 
@@ -511,9 +481,21 @@ void triggerGreenBlink() {
   }
 }
 
+// Blink red 3 times and stay red, when someone passes while already red.
+// The state is still 2, so nothing is published to MQTT
+void retriggerRedBlink() {
+  activeBlinkConfig = redReblinkConfig;
+  blinkStartTime = millis();
+  blinkingDone = false;
+  updateLEDs();
+  Serial.println("Passage while red: blinking red 3 times");
+}
+
 // Function to trigger random blink (60% green, 40% red)
 void triggerRandomBlink() {
-  if (currentState == ROTATING) {
+  if (currentState == BLINK_RED) {
+    retriggerRedBlink();
+  } else if (currentState == ROTATING) {
     // Generate random number between 0-99
     int randomValue = random(100);
     
@@ -623,6 +605,8 @@ void checkMotionDetection() {
         
         inPassage = true;
         passageStartTime = now;
+        passageCount++;
+        prefs.putUInt("passages", passageCount);
         triggerRandomBlink(); // Use random selection (60% green, 40% red)
         
       } else if (inPassage) {
@@ -712,6 +696,12 @@ void setup() {
   
   Serial.println("\n\n=== RGB Portal Starting ===");
   
+  // Load the passage counter
+  prefs.begin("portal", false);
+  passageCount = prefs.getUInt("passages", 0);
+  Serial.print("Passages so far: ");
+  Serial.println(passageCount);
+
   // Initialize ultrasonic sensor pins
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
@@ -719,7 +709,7 @@ void setup() {
   
   // Initialize FastLED
   FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS);
-  FastLED.setBrightness(50); // Set brightness (0-255)
+  FastLED.setBrightness(BLINK_BRIGHTNESS); // Each effect sets its own before show()
   Serial.println("FastLED initialized");
   
   // Set initial state to ROTATING before any updates
@@ -739,6 +729,7 @@ void setup() {
   
   // Connect to WiFi
   Serial.println("Connecting to WiFi...");
+  WiFi.setHostname("rgb-portal"); // Shown in the DHCP leases
   WiFi.begin(ssid, password);
   
   while (WiFi.status() != WL_CONNECTED) {
@@ -819,6 +810,9 @@ void setup() {
   
   // GET /distance - Get current ultrasonic sensor distance
   server.on("/distance", handleDistance);
+
+  // GET /sensor-debug - Raw ECHO timing for troubleshooting the wiring
+  server.on("/sensor-debug", handleSensorDebug);
   
   // GET /signal - Get WiFi signal strength
   server.on("/signal", handleWiFiSignal);

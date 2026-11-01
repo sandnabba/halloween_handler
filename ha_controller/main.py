@@ -1,6 +1,7 @@
 from datetime import datetime
 import os
 from threading import Thread
+from time import monotonic, sleep
 from dotenv import load_dotenv
 from flask import Flask
 from flask_cors import CORS
@@ -24,6 +25,7 @@ PORTAL_STATE_TOPIC = os.getenv("PORTAL_STATE_TOPIC", "portal/state")
 COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "30"))
 WEB_PORT = int(os.getenv("WEB_PORT", "5000"))
 VISITORS_FILE = os.getenv("VISITORS_FILE", "visitors.json")
+HEALTH_CHECK_INTERVAL = 10  # Seconds between the HA and portal health checks
 
 # Validate required configuration
 if not BROKER_HOSTNAME:
@@ -39,25 +41,70 @@ CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 
-def refresh_status() -> dict:
-    """Run the health checks and return a status snapshot"""
-    # Outside the lock: these are network requests, and an offline portal
-    # would otherwise block every other thread until the timeout
-    state.update(
-        ha_available=ha.check_health(),
-        portal_online=portal.check_online(),
-        debug_mode=ha.debug_mode,
-    )
-    return state.snapshot()
+def get_status() -> dict:
+    """The current status, as sent to the web frontend"""
+    status = state.snapshot()
+    status["debug_mode"] = ha.debug_mode
+    return status
 
 
 def broadcast_status():
     """Send the current status to all connected WebSocket clients"""
-    socketio.emit('status_update', refresh_status())
+    socketio.emit('status_update', get_status())
+
+
+def check_health() -> bool:
+    """Run the HA and portal health checks. Returns True if a result changed"""
+    # Network requests, so outside the lock
+    ha_available, portal_info = ha.check_health(), portal.poll()
+    fields = {"ha_available": ha_available, "portal_online": portal_info is not None}
+    if portal_info is not None:
+        # Kept while the portal is offline, so the last known count stays visible
+        fields["portal_passages"] = portal_info.get("passages")
+    with state.lock:
+        changed = any(state.data[k] != v for k, v in fields.items())
+        state.data.update(fields)
+    return changed
+
+
+def ensure_portal_rotating():
+    """
+    Called when the cooldown ends. Visitors often walk back through the portal
+    during the cooldown, and if it turns red then, no scenario starts and it
+    would stay red.
+    """
+    info = portal.get_state()
+    if info and info.get("state") != PortalHandler.STATE_ROTATING:
+        print(f"Cooldown over, portal in state {info.get('state')} - resetting to rotating")
+        portal.reset()
+
+
+def status_monitor():
+    """
+    Background loop for what changes with time rather than with an event: the
+    cooldown ending, and the periodic health checks. Broadcasts when either
+    changes the status, so the frontend never waits for a reload.
+    """
+    last_scenario_state = None
+    next_health_check = 0.0
+    while True:
+        changed = False
+        if monotonic() >= next_health_check:
+            changed = check_health()
+            next_health_check = monotonic() + HEALTH_CHECK_INTERVAL
+        scenario_state = state.snapshot()["scenario_state"]
+        if scenario_state != last_scenario_state:
+            if last_scenario_state == "Cooldown" and scenario_state == "Waiting":
+                ensure_portal_rotating()
+            last_scenario_state = scenario_state
+            changed = True
+        if changed:
+            broadcast_status()
+        sleep(0.5)
 
 
 scenario = ScenarioHandler(portal, ha, state, broadcast_status)
-app.register_blueprint(create_api(state, portal, ha, scenario, refresh_status, broadcast_status))
+app.register_blueprint(create_api(state, portal, ha, scenario, get_status, broadcast_status))
 websocket_handlers.register_handlers(socketio, portal, ha, broadcast_status)
 
 
@@ -137,6 +184,7 @@ def main():
 
     Thread(target=run_flask, daemon=True).start()
     print(f"✓ API and WebSocket started on port {WEB_PORT}")
+    Thread(target=status_monitor, daemon=True).start()
 
     # Initial state: lights on, portal rotating
     print("\nSetting initial state...")
